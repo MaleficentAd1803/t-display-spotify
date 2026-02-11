@@ -1,0 +1,4 @@
+.pio/
+.vscode/
+include/certs.h
+get_token.py
