@@ -32,6 +32,7 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <esp_https_server.h>
+#include <time.h>
 #include "certs.h"
 
 // ── Spotify Credentials ──────────────────────────────────
@@ -70,12 +71,20 @@ const char* SPOTIFY_CLIENT_SECRET = "YOUR_CLIENT_SECRET";
 #define ARTIST_Y    30
 #define ALBUM_Y     50
 #define DEVICE_Y    72
-#define ICON_X      TXT_X
-#define ICON_Y      100
+#define ICON_W      12    // Icon content width
+#define ICON_H      16    // Icon content height
+#define ICON_MARGIN 14    // Equal margin from screen right and screen bottom
+#define ICON_X      (SCR_W - ICON_W - ICON_MARGIN)   // 294
+#define ICON_Y      (SCR_H - ICON_H - ICON_MARGIN)   // 140
 
 // Progress bar (full width, bottom edge)
 #define BAR_Y       168
 #define BAR_H       2
+
+// Clock (right panel, below play icon)
+#define CLOCK_X     TXT_X
+#define CLOCK_Y     95
+#define CLOCK_MS    1000
 
 // Title scroll
 #define SCROLL_MS       30
@@ -111,6 +120,10 @@ bool          scrollPaused   = true;
 
 // Screen on/off
 bool          screenOn       = true;
+
+// Clock
+unsigned long lastClock      = 0;
+String        lastTimeStr    = "";
 
 // ── Playback State ───────────────────────────────────────
 struct Playback {
@@ -199,14 +212,14 @@ String fitText(const String& s, int maxPx) {
 //  Draw play / pause icon
 // ============================================================
 void drawIcon(bool playing) {
-  tft.fillRect(ICON_X, ICON_Y, 30, 18, TFT_BLACK);
+  tft.fillRect(ICON_X, ICON_Y, ICON_W, ICON_H, TFT_BLACK);
   if (playing) {
     tft.fillTriangle(ICON_X, ICON_Y,
-                     ICON_X, ICON_Y + 16,
-                     ICON_X + 12, ICON_Y + 8, TFT_WHITE);
+                     ICON_X, ICON_Y + ICON_H - 1,
+                     ICON_X + ICON_W - 1, ICON_Y + ICON_H / 2, TFT_WHITE);
   } else {
-    tft.fillRect(ICON_X,     ICON_Y, 4, 16, TFT_WHITE);
-    tft.fillRect(ICON_X + 8, ICON_Y, 4, 16, TFT_WHITE);
+    tft.fillRect(ICON_X,            ICON_Y, 4, ICON_H, TFT_WHITE);
+    tft.fillRect(ICON_X + ICON_W - 4, ICON_Y, 4, ICON_H, TFT_WHITE);
   }
 }
 
@@ -219,6 +232,28 @@ void drawBar(int progress, int duration) {
     int w = constrain((int)((long)progress * SCR_W / duration), 0, SCR_W);
     if (w > 0) tft.fillRect(0, BAR_Y, w, BAR_H, TFT_WHITE);
   }
+}
+
+// ============================================================
+//  Draw clock on left panel (below album art area)
+// ============================================================
+void drawClock() {
+  struct tm t;
+  if (!getLocalTime(&t, 0)) return;
+
+  char buf[6];
+  strftime(buf, sizeof(buf), "%H:%M", &t);
+  String timeStr = String(buf);
+
+  if (timeStr == lastTimeStr) return;
+  lastTimeStr = timeStr;
+
+  tft.fillRect(CLOCK_X, CLOCK_Y, TXT_W, 16, TFT_BLACK);
+  tft.setTextFont(2);
+  tft.setTextColor(0x7BEF, TFT_BLACK);
+  tft.setCursor(CLOCK_X, CLOCK_Y);
+  tft.print(timeStr);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
 }
 
 // ============================================================
@@ -242,6 +277,34 @@ void drawTitle() {
 }
 
 // ============================================================
+//  Draw idle clock (big HH:MM:SS, centered, low brightness)
+// ============================================================
+void drawIdleClock() {
+  struct tm t;
+  if (!getLocalTime(&t, 0)) return;
+
+  char buf[9];
+  strftime(buf, sizeof(buf), "%H:%M:%S", &t);
+  String timeStr = String(buf);
+
+  if (timeStr == lastTimeStr) return;
+  lastTimeStr = timeStr;
+
+  // Clear center area and draw big time
+  tft.setTextFont(4);
+  int tw = tft.textWidth(timeStr);
+  int th = 26;  // Font 4 height
+  int cx = (SCR_W - tw) / 2;
+  int cy = (SCR_H - th) / 2;
+  tft.fillRect(cx - 4, cy - 2, tw + 8, th + 4, TFT_BLACK);
+  tft.setTextColor(0x4208, TFT_BLACK);  // dim gray
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString(timeStr, SCR_W / 2, SCR_H / 2);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+}
+
+// ============================================================
 //  Draw the right-side panel
 // ============================================================
 void drawInfo() {
@@ -251,12 +314,10 @@ void drawInfo() {
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (!now.active) {
-    // Clear entire screen, no separator
+    // Clear screen, dim backlight, show big clock
     tft.fillScreen(TFT_BLACK);
-    tft.setTextFont(2);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("Nothing is playing", SCR_W / 2, SCR_H / 2);
-    tft.setTextDatum(TL_DATUM);
+    analogWrite(BL_PIN, 20);  // Low brightness
+    drawIdleClock();
     return;
   }
 
@@ -301,7 +362,20 @@ void drawInfo() {
 void poll() {
   if (!sp || !spotifyReady) return;
 
+  Serial.printf("[Poll] Free heap: %u bytes\n", ESP.getFreeHeap());
+
+  // Recreate Spotify object if heap is getting low (memory leak workaround)
+  if (ESP.getFreeHeap() < 50000) {
+    Serial.println("[Poll] Low memory — recreating Spotify client");
+    String rtoken = prefs.getString("rtoken", "");
+    delete sp;
+    sp = new Spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, rtoken.c_str());
+    sp->begin();
+    Serial.printf("[Poll] Heap after recreate: %u bytes\n", ESP.getFreeHeap());
+  }
+
   response res = sp->current_playback_state();
+  Serial.printf("[Poll] Status: %d\n", res.status_code);
 
   if (res.status_code == 200) {
     String trk  = res.reply["item"]["name"]              | "";
@@ -321,8 +395,10 @@ void poll() {
     if (images.size() > 1)      img = images[1]["url"] | "";
     else if (images.size() > 0) img = images[0]["url"] | "";
 
-    bool trackChanged = (trk != now.track || img != now.imgUrl);
-    bool playChanged  = (play != now.playing);
+    bool wasInactive   = !now.active;
+    bool trackChanged  = (trk != now.track || img != now.imgUrl);
+    bool deviceChanged = (dev != now.device);
+    bool playChanged   = (play != now.playing);
 
     now.track    = trk;
     now.artist   = art;
@@ -335,9 +411,20 @@ void poll() {
     now.pollTime = millis();
     now.active   = true;
 
-    if (trackChanged) {
-      tft.fillRect(ART_X, 0, ART_SZ, BAR_Y, TFT_BLACK);
+    Serial.printf("[Poll] Track: %s | Artist: %s | Device: %s | Playing: %d\n",
+                  trk.c_str(), art.c_str(), dev.c_str(), play);
+
+    if (trackChanged || wasInactive) {
+      Serial.println("[Poll] Track changed — redrawing");
+      if (wasInactive) {
+        analogWrite(BL_PIN, 255);  // Restore full brightness
+        lastTimeStr = "";  // Reset clock state
+      }
+      tft.fillScreen(TFT_BLACK);
       showAlbumArt(img);
+      drawInfo();
+    } else if (deviceChanged) {
+      Serial.printf("[Poll] Device changed → %s\n", dev.c_str());
       drawInfo();
     } else if (playChanged) {
       drawIcon(now.playing);
@@ -346,14 +433,26 @@ void poll() {
       drawBar(now.progress, now.duration);
     }
 
+    // Free JSON memory
+    res.reply.clear();
+
   } else if (res.status_code == 204) {
+    Serial.println("[Poll] Nothing playing (204)");
     if (now.active) {
       now = Playback{};
       tft.fillScreen(TFT_BLACK);
       drawInfo();
     }
   } else {
-    Serial.printf("[Spotify] API %d\n", res.status_code);
+    Serial.printf("[Poll] API error: %d\n", res.status_code);
+    // On auth errors, try recreating the client
+    if (res.status_code == 401) {
+      Serial.println("[Poll] 401 Unauthorized — recreating Spotify client");
+      String rtoken = prefs.getString("rtoken", "");
+      delete sp;
+      sp = new Spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, rtoken.c_str());
+      sp->begin();
+    }
   }
 }
 
@@ -362,6 +461,7 @@ void poll() {
 // ============================================================
 void onSkip() {
   if (!sp || !spotifyReady) return;
+  Serial.println("[Button] Skip →");
   sp->skip();
   delay(400);
   poll();
@@ -369,6 +469,7 @@ void onSkip() {
 
 void onPrev() {
   if (!sp || !spotifyReady) return;
+  Serial.println("[Button] Previous ←");
   sp->previous();
   delay(400);
   poll();
@@ -376,6 +477,7 @@ void onPrev() {
 
 void onPlayPause() {
   if (!sp || !spotifyReady) return;
+  Serial.printf("[Button] %s\n", now.playing ? "Pause" : "Play");
   if (now.playing) sp->pause_playback();
   else             sp->start_resume_playback();
   now.playing = !now.playing;
@@ -384,11 +486,13 @@ void onPlayPause() {
 
 void onScreenToggle() {
   screenOn = !screenOn;
+  Serial.printf("[Button] Screen %s\n", screenOn ? "ON" : "OFF");
   if (screenOn) {
-    digitalWrite(BL_PIN, HIGH);
+    analogWrite(BL_PIN, now.active ? 255 : 20);
+    lastTimeStr = "";  // Force clock redraw
     poll();
   } else {
-    digitalWrite(BL_PIN, LOW);
+    analogWrite(BL_PIN, 0);
   }
 }
 
@@ -397,7 +501,7 @@ void onFlipScreen() {
   prefs.putUChar("rotation", screenRotation);
   tft.setRotation(screenRotation);
   tft.fillScreen(TFT_BLACK);
-  Serial.printf("[Display] Rotation flipped to %d\n", screenRotation);
+  Serial.printf("[Button] Rotation flipped to %d\n", screenRotation);
   poll();
 }
 
@@ -657,6 +761,16 @@ void setup() {
   showStatus("WiFi connected", WiFi.localIP().toString().c_str());
   delay(1500);
 
+  // ── NTP time sync ────────────────────────────────────────
+  configTime(3600, 3600, "pool.ntp.org", "time.nist.gov");
+  Serial.println("[NTP] Syncing time...");
+  struct tm t;
+  if (getLocalTime(&t, 5000)) {
+    Serial.printf("[NTP] Time: %02d:%02d:%02d\n", t.tm_hour, t.tm_min, t.tm_sec);
+  } else {
+    Serial.println("[NTP] Sync failed — will retry in background");
+  }
+
   // ── Spotify auth ───────────────────────────────────────
   String refreshToken = prefs.getString("rtoken", "");
 
@@ -736,6 +850,16 @@ void loop() {
         scrollPauseAt = ms + SCROLL_PAUSE_MS;
       }
       drawTitle();
+    }
+  }
+
+  // Clock update
+  if (screenOn && ms - lastClock >= CLOCK_MS) {
+    lastClock = ms;
+    if (now.active) {
+      drawClock();
+    } else {
+      drawIdleClock();
     }
   }
 
