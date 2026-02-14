@@ -316,7 +316,7 @@ void drawInfo() {
   if (!now.active) {
     // Clear screen, dim backlight, show big clock
     tft.fillScreen(TFT_BLACK);
-    analogWrite(BL_PIN, 20);  // Low brightness
+    analogWrite(BL_PIN, 60);  // Low brightness for idle clock
     drawIdleClock();
     return;
   }
@@ -394,6 +394,13 @@ void poll() {
     JsonArray images = res.reply["item"]["album"]["images"];
     if (images.size() > 1)      img = images[1]["url"] | "";
     else if (images.size() > 0) img = images[0]["url"] | "";
+
+    // If not playing and we're already idle, stay idle
+    if (!play && !now.active) {
+      Serial.printf("[Poll] Paused & idle — staying idle (%s)\n", trk.c_str());
+      res.reply.clear();
+      return;
+    }
 
     bool wasInactive   = !now.active;
     bool trackChanged  = (trk != now.track || img != now.imgUrl);
@@ -488,7 +495,7 @@ void onScreenToggle() {
   screenOn = !screenOn;
   Serial.printf("[Button] Screen %s\n", screenOn ? "ON" : "OFF");
   if (screenOn) {
-    analogWrite(BL_PIN, now.active ? 255 : 20);
+    analogWrite(BL_PIN, now.active ? 255 : 60);
     lastTimeStr = "";  // Force clock redraw
     poll();
   } else {
