@@ -354,6 +354,10 @@ void drawInfo() {
 
   drawIcon(now.playing);
   drawBar(now.progress, now.duration);
+
+  // Redraw clock immediately so it doesn't flash away
+  lastTimeStr = "";
+  drawClock();
 }
 
 // ============================================================
@@ -509,7 +513,13 @@ void onFlipScreen() {
   tft.setRotation(screenRotation);
   tft.fillScreen(TFT_BLACK);
   Serial.printf("[Button] Rotation flipped to %d\n", screenRotation);
-  poll();
+  // Force full redraw — poll() won't redraw if nothing changed
+  if (now.active) {
+    showAlbumArt(now.imgUrl);
+    drawInfo();
+  } else {
+    drawInfo();  // draws idle clock
+  }
 }
 
 // ============================================================
