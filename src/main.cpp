@@ -71,6 +71,7 @@ bool          scrollPaused   = true;
 
 // Clock
 unsigned long lastClock      = 0;
+unsigned long lastBar        = 0;
 String        lastTimeStr    = "";
 
 // Ticker
@@ -87,6 +88,12 @@ String        stockApiKey;
 volatile uint32_t      redrawFlags    = 0;
 volatile PendingAction pendingAction  = ACTION_NONE;
 volatile bool          tickerListChanged = false;
+
+// CPU usage tracking (per-core busy time measurement)
+static unsigned long cpuLastReport     = 0;
+static unsigned long core1BusyUs       = 0;
+static unsigned long core0BusyUs       = 0;
+#define CPU_REPORT_MS 5000
 
 // Background task timing (owned by core 0)
 static unsigned long bgLastPoll       = 0;
@@ -208,6 +215,7 @@ static void backgroundTask(void* param) {
   Serial.println("[BG] Background task started on core 0");
 
   while (true) {
+    unsigned long loopStart = micros();
     unsigned long ms = millis();
 
     // Process queued button actions (Spotify API calls)
@@ -263,6 +271,7 @@ static void backgroundTask(void* param) {
       ensureWiFi();
     }
 
+    core0BusyUs += micros() - loopStart;
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -483,6 +492,7 @@ void setup() {
 //  Never blocks on network — all HTTP done on core 0.
 // ============================================================
 void loop() {
+  unsigned long loopStart = micros();
   topBtn.tick();
   botBtn.tick();
 
@@ -532,7 +542,8 @@ void loop() {
   }
 
   // ── Progress bar (interpolated) ───────────────────────
-  if (screenOn && now.active && now.playing && ms - lastClock >= BAR_MS) {
+  if (screenOn && now.active && now.playing && ms - lastBar >= BAR_MS) {
+    lastBar = ms;
     int elapsed = ms - now.pollTime;
     int cur = min(now.progress + (int)elapsed, now.duration);
     drawBar(cur, now.duration);
@@ -590,4 +601,19 @@ void loop() {
 
   // ── Serial input ──────────────────────────────────────
   checkSerialInput();
+
+  // ── CPU usage report ──────────────────────────────────
+  core1BusyUs += micros() - loopStart;
+  if (ms - cpuLastReport >= CPU_REPORT_MS) {
+    unsigned long elapsed = (ms - cpuLastReport) * 1000UL;  // to microseconds
+    float c1 = elapsed > 0 ? 100.0f * core1BusyUs / elapsed : 0;
+    float c0 = elapsed > 0 ? 100.0f * core0BusyUs / elapsed : 0;
+    Serial.printf("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u\n", c0, c1, ESP.getFreeHeap());
+    core0BusyUs = 0;
+    core1BusyUs = 0;
+    cpuLastReport = ms;
+  }
+
+  // ── Yield to RTOS (prevents 100% busy loop) ───────────
+  delay(1);
 }
