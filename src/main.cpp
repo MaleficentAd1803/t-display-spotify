@@ -243,7 +243,7 @@ static void backgroundTask(void* param) {
     isActive = now.active;
     xSemaphoreGive(dataMutex);
 
-    unsigned long pollInterval = isActive ? POLL_MS : 30000;
+    unsigned long pollInterval = isActive ? POLL_MS : 5000;
     if (screenOn && ms - bgLastPoll >= pollInterval) {
       bgLastPoll = ms;
       pollSpotifyData();
