@@ -1,6 +1,6 @@
 # T-Display Spotify
 
-A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST7789 320x170 LCD).
+A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST7789 320x170 LCD) with a stock & crypto ticker on the idle screen.
 
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32--S3-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -11,10 +11,14 @@ A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST778
 - **Scrolling title** — bold FreeSans font, auto-scrolls when the title doesn't fit
 - **Artist, album & device name** — displayed on the right panel
 - **Play/pause icon** and **progress bar** with interpolated updates
+- **NTP clock** — small clock during playback, large centered clock when idle
+- **Stock & crypto ticker** — scrolling prices on the idle screen (CoinGecko + Finnhub)
+- **Web config UI** — manage ticker list, reorder symbols, and set API keys from any browser
 - **On-device HTTPS OAuth** — self-signed cert server runs on the ESP32; no external scripts needed
 - **WiFiManager captive portal** — no hardcoded SSIDs
 - **Screen flip** — long-press to rotate 180°, saved to NVS
 - **Screen on/off** — double-click to toggle the backlight
+- **Dual-core architecture** — rendering on core 1, network on core 0 for smooth animations
 
 ## Hardware
 
@@ -95,6 +99,43 @@ pio run -t upload
 2. After WiFi connects, the display shows an HTTPS URL — add it as a **Redirect URI** in your Spotify app settings.
 3. Open the URL in a browser, accept the self-signed certificate warning, and click the login link.
 4. The refresh token is saved automatically. Subsequent boots skip this step.
+
+### 6. Stock & crypto ticker
+
+The idle screen shows a scrolling ticker with stock and crypto prices. Default symbols: `NVDA, LMT, PLTR, BTC, XMR, ETH`.
+
+**Web config:** Open `http://<device-ip>` in a browser (the IP is shown on the idle screen) to add, remove, and reorder ticker symbols.
+
+**Stock prices** require a free [Finnhub](https://finnhub.io/register) API key — enter it in the web config page. Crypto prices use CoinGecko (no key needed).
+
+You can also configure via serial:
+```
+TICKERS:AAPL,MSFT,BTC,ETH
+STOCKKEY:your_finnhub_api_key
+```
+
+## Project Structure
+
+```
+src/
+  main.cpp       — setup, loop, button callbacks, background task
+  display.cpp    — all TFT drawing functions
+  ticker.cpp     — price fetching (CoinGecko/Finnhub) and ticker rendering
+  network.cpp    — OAuth flow, config web server, WiFi, serial input
+include/
+  config.h       — shared constants, structs, and declarations
+  certs.h        — SSL certificate (not in repo)
+  User_Setup.h   — TFT_eSPI display configuration
+```
+
+## Architecture
+
+The ESP32-S3's dual cores are used to keep animations smooth:
+
+- **Core 0** (background) — Spotify API polling, ticker price fetching, WiFi reconnect, button API calls
+- **Core 1** (foreground) — all rendering, scroll animations, button detection, clock updates
+
+A FreeRTOS mutex protects shared playback state. Volatile flags signal redraw requests from core 0 to core 1.
 
 ## Libraries
 
