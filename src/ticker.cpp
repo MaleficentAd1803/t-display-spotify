@@ -12,6 +12,14 @@ const char* getCoinGeckoId(const char* sym) {
   return nullptr;
 }
 
+// ── Lookup Finnhub symbol for a commodity ────────────────
+const char* getCommodityFinnhubSymbol(const char* sym) {
+  for (int i = 0; i < (int)COMMODITY_MAP_SIZE; i++) {
+    if (strcasecmp(sym, COMMODITY_MAP[i].sym) == 0) return COMMODITY_MAP[i].finnhubSym;
+  }
+  return nullptr;
+}
+
 // ── Load ticker list from NVS ───────────────────────────
 void loadTickers() {
   String list = prefs.getString("tickers", "NVDA,LMT,PLTR,BTC,XMR,ETH");
@@ -31,6 +39,7 @@ void loadTickers() {
       tickerItems[numTickers].change = 0;
       tickerItems[numTickers].valid = false;
       tickerItems[numTickers].isCrypto = (getCoinGeckoId(sym.c_str()) != nullptr);
+      tickerItems[numTickers].isCommodity = (getCommodityFinnhubSymbol(sym.c_str()) != nullptr);
       numTickers++;
     }
     start = comma + 1;
@@ -85,19 +94,29 @@ void fetchCryptoPrices() {
   http.end();
 }
 
-// ── Fetch stock prices from Finnhub ─────────────────────
+// ── Fetch stock/commodity prices from Finnhub ───────────
 void fetchStockPrices() {
   if (stockApiKey.length() == 0) return;
 
   for (int i = 0; i < numTickers; i++) {
     if (tickerItems[i].isCrypto) continue;
 
+    // Use mapped Finnhub symbol for commodities, raw symbol for stocks
+    String symbol;
+    if (tickerItems[i].isCommodity) {
+      const char* mapped = getCommodityFinnhubSymbol(tickerItems[i].symbol);
+      if (!mapped) continue;
+      symbol = mapped;
+    } else {
+      symbol = tickerItems[i].symbol;
+    }
+
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
     http.setTimeout(10000);
     String url = "https://finnhub.io/api/v1/quote?symbol=";
-    url += tickerItems[i].symbol;
+    url += symbol;
     url += "&token=";
     url += stockApiKey;
     http.begin(client, url);

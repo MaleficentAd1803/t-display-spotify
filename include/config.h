@@ -94,6 +94,11 @@ struct CryptoMap { const char* sym; const char* id; };
 extern const CryptoMap CRYPTO_MAP[];
 #define CRYPTO_MAP_SIZE 21
 
+// ── Commodity mapping (Finnhub OANDA symbols) ───────────
+struct CommodityMap { const char* sym; const char* finnhubSym; };
+extern const CommodityMap COMMODITY_MAP[];
+#define COMMODITY_MAP_SIZE 7
+
 // ── Ticker item ─────────────────────────────────────────
 struct TickerItem {
   char  symbol[8];
@@ -101,6 +106,7 @@ struct TickerItem {
   float change;
   bool  valid;
   bool  isCrypto;
+  bool  isCommodity;
 };
 
 // ── Playback state ──────────────────────────────────────
@@ -172,6 +178,7 @@ void showStatus(const char* line1, const char* line2 = nullptr);
 
 // ticker.cpp
 const char* getCoinGeckoId(const char* sym);
+const char* getCommodityFinnhubSymbol(const char* sym);
 void loadTickers();
 void fetchCryptoPrices();
 void fetchStockPrices();

@@ -154,7 +154,7 @@ void drawInfo() {
 
   if (!now.active) {
     tft.fillScreen(TFT_BLACK);
-    analogWrite(BL_PIN, 60);
+    analogWrite(BL_PIN, 128);
     drawIdleClock();
     // Show config URL
     tft.setTextFont(1);

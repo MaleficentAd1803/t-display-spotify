@@ -46,6 +46,16 @@ const CryptoMap CRYPTO_MAP[] = {
   {"SUI","sui"},{"APT","aptos"},{"XMR","monero"},
 };
 
+const CommodityMap COMMODITY_MAP[] = {
+  {"GOLD",   "GLD"},     // SPDR Gold Shares ETF
+  {"SILVER", "SLV"},     // iShares Silver Trust
+  {"OIL",    "USO"},     // United States Oil Fund
+  {"NATGAS", "UNG"},     // United States Natural Gas Fund
+  {"COPPER", "CPER"},    // United States Copper Index Fund
+  {"PLAT",   "PPLT"},    // abrdn Physical Platinum Shares
+  {"PALLAD", "PALL"},    // abrdn Physical Palladium Shares
+};
+
 // ── Global object definitions ───────────────────────────
 TFT_eSPI    tft;
 Spotify*    sp          = nullptr;
@@ -310,7 +320,7 @@ static void onScreenToggle() {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
     xSemaphoreGive(dataMutex);
-    analogWrite(BL_PIN, active ? 255 : 60);
+    analogWrite(BL_PIN, active ? 255 : 128);
     lastTimeStr = "";
     bgLastPoll = 0;  // trigger immediate poll on core 0
   } else {
