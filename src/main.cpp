@@ -69,6 +69,8 @@ SemaphoreHandle_t dataMutex;
 bool          spotifyReady   = false;
 uint8_t       screenRotation = 1;
 bool          screenOn       = true;
+uint8_t       brightPlay     = 255;
+uint8_t       brightIdle     = 128;
 Playback      now;
 
 // Title scroll
@@ -98,6 +100,7 @@ String        stockApiKey;
 volatile uint32_t      redrawFlags    = 0;
 volatile PendingAction pendingAction  = ACTION_NONE;
 volatile bool          tickerListChanged = false;
+volatile bool          settingsChanged   = false;
 
 // CPU usage tracking (per-core busy time measurement)
 static unsigned long cpuLastReport     = 0;
@@ -320,7 +323,7 @@ static void onScreenToggle() {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
     xSemaphoreGive(dataMutex);
-    analogWrite(BL_PIN, active ? 255 : 128);
+    analogWrite(BL_PIN, active ? brightPlay : brightIdle);
     lastTimeStr = "";
     bgLastPoll = 0;  // trigger immediate poll on core 0
   } else {
@@ -417,7 +420,9 @@ void setup() {
   delay(1500);
 
   // ── NTP time sync ──────────────────────────────────────
-  configTime(3600, 3600, "pool.ntp.org", "time.nist.gov");
+  long gmtOff = prefs.getLong("gmtoff", 3600);
+  long dstOff = prefs.getLong("dstoff", 0);
+  configTime(gmtOff, dstOff, "pool.ntp.org", "time.nist.gov");
   Serial.println("[NTP] Syncing time...");
   struct tm t;
   if (getLocalTime(&t, 5000)) {
@@ -458,6 +463,8 @@ void setup() {
   tickerSpr.setSwapBytes(true);
   loadTickers();
   stockApiKey = prefs.getString("stockkey", "");
+  brightPlay = prefs.getUChar("br_play", 255);
+  brightIdle = prefs.getUChar("br_idle", 128);
   if (stockApiKey.length() == 0) {
     Serial.println("[Ticker] No stock API key. Get free key at https://finnhub.io/register");
     Serial.println("[Ticker] Then send: STOCKKEY:your_key_here");
@@ -478,9 +485,6 @@ void setup() {
   // ── Data mutex ─────────────────────────────────────────
   dataMutex = xSemaphoreCreateMutex();
 
-  // ── Start background task on core 0 ────────────────────
-  xTaskCreatePinnedToCore(backgroundTask, "bg", 16384, NULL, 1, NULL, 0);
-
   // ── First poll + draw (before background task starts) ──
   tft.fillScreen(TFT_BLACK);
   pollSpotifyData();
@@ -489,13 +493,17 @@ void setup() {
   uint32_t initFlags = redrawFlags;
   redrawFlags = 0;
   if (initFlags & RFLAG_TRACK_CHANGED) {
-    if (initFlags & RFLAG_GONE_ACTIVE) analogWrite(BL_PIN, 255);
+    if (initFlags & RFLAG_GONE_ACTIVE) analogWrite(BL_PIN, brightPlay);
     showAlbumArt(now.imgUrl);
     drawInfo();
   } else {
-    analogWrite(BL_PIN, 128);
+    analogWrite(BL_PIN, brightIdle);
     drawInfo();  // idle screen
   }
+
+  // ── Start background task on core 0 ────────────────────
+  // Must be after first poll so both cores don't call Spotify API simultaneously
+  xTaskCreatePinnedToCore(backgroundTask, "bg", 16384, NULL, 1, NULL, 0);
 }
 
 // ============================================================
@@ -515,14 +523,16 @@ void loop() {
     redrawFlags = 0;
 
     if (flags & RFLAG_GONE_IDLE) {
-      analogWrite(BL_PIN, 128);
+      analogWrite(BL_PIN, brightIdle);
       tft.fillScreen(TFT_BLACK);
+      xSemaphoreTake(dataMutex, portMAX_DELAY);
       drawInfo();
+      xSemaphoreGive(dataMutex);
     }
 
     if (flags & RFLAG_TRACK_CHANGED) {
       if (flags & RFLAG_GONE_ACTIVE) {
-        analogWrite(BL_PIN, 255);
+        analogWrite(BL_PIN, brightPlay);
         lastTimeStr = "";
       }
 
@@ -576,7 +586,9 @@ void loop() {
         scrollPaused = true;
         scrollPauseAt = ms + SCROLL_PAUSE_MS;
       }
+      xSemaphoreTake(dataMutex, portMAX_DELAY);
       drawTitle();
+      xSemaphoreGive(dataMutex);
     }
   }
 
@@ -599,6 +611,22 @@ void loop() {
     tickerScrollX = 0;
     bgTickerFetchNeeded = true;
     if (!now.active) tft.fillRect(0, TICKER_Y, SCR_W, TICKER_H, TFT_BLACK);
+  }
+
+  // ── Settings changed (brightness/timezone) via web UI ──
+  if (settingsChanged) {
+    settingsChanged = false;
+    brightPlay = prefs.getUChar("br_play", 255);
+    brightIdle = prefs.getUChar("br_idle", 128);
+    long gmt = prefs.getLong("gmtoff", 3600);
+    long dst = prefs.getLong("dstoff", 0);
+    configTime(gmt, dst, "pool.ntp.org", "time.nist.gov");
+    lastTimeStr = "";
+
+    xSemaphoreTake(dataMutex, portMAX_DELAY);
+    bool active = now.active;
+    xSemaphoreGive(dataMutex);
+    analogWrite(BL_PIN, active ? brightPlay : brightIdle);
   }
 
   // ── Ticker scrolling (never interrupted by network) ───

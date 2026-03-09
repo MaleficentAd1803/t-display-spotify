@@ -12,8 +12,8 @@ A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST778
 - **Artist, album & device name** — displayed on the right panel
 - **Play/pause icon** and **progress bar** with interpolated updates
 - **NTP clock** — small clock during playback, large centered clock when idle
-- **Stock & crypto ticker** — scrolling prices on the idle screen (CoinGecko + Finnhub)
-- **Web config UI** — manage ticker list, reorder symbols, and set API keys from any browser
+- **Stock, crypto & commodity ticker** — scrolling prices on the idle screen (CoinGecko + Finnhub)
+- **Web config UI** — manage ticker list, timezone, and brightness settings from any browser
 - **On-device HTTPS OAuth** — self-signed cert server runs on the ESP32; no external scripts needed
 - **WiFiManager captive portal** — no hardcoded SSIDs
 - **Screen flip** — long-press to rotate 180°, saved to NVS
@@ -102,15 +102,26 @@ pio run -t upload
 
 ### 6. Stock & crypto ticker
 
-The idle screen shows a scrolling ticker with stock and crypto prices. Default symbols: `NVDA, LMT, PLTR, BTC, XMR, ETH`.
+The idle screen shows a scrolling ticker with stock, crypto, and commodity prices. Default symbols: `NVDA, LMT, PLTR, BTC, XMR, ETH`.
 
-**Web config:** Open `http://<device-ip>` in a browser (the IP is shown on the idle screen) to add, remove, and reorder ticker symbols.
+**Supported symbol types:**
+- **Stocks** — any Finnhub-supported ticker (e.g. `AAPL`, `MSFT`, `NVDA`)
+- **Crypto** — `BTC`, `ETH`, `SOL`, `ADA`, `XRP`, `DOGE`, `DOT`, `AVAX`, `BNB`, `LTC`, `LINK`, `SHIB`, `MATIC`, `UNI`, `ATOM`, `PEPE`, `ARB`, `OP`, `SUI`, `APT`, `XMR`
+- **Commodities** — `GOLD`, `SILVER`, `OIL`, `NATGAS`, `COPPER`, `PLAT`, `PALLAD` (fetched via ETF proxies)
+
+**Web config:** Open `http://<device-ip>` in a browser (the IP is shown on the idle screen) to:
+- Add, remove, and reorder ticker symbols
+- Set your Finnhub API key
+- Configure timezone (UTC offset + DST)
+- Adjust playing and idle brightness separately
+
+The web UI only reloads what actually changed — adjusting brightness won't trigger a ticker reload.
 
 **Stock prices** require a free [Finnhub](https://finnhub.io/register) API key — enter it in the web config page. Crypto prices use CoinGecko (no key needed).
 
 You can also configure via serial:
 ```
-TICKERS:AAPL,MSFT,BTC,ETH
+TICKERS:AAPL,MSFT,BTC,ETH,GOLD
 STOCKKEY:your_finnhub_api_key
 ```
 

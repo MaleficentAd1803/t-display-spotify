@@ -94,7 +94,7 @@ struct CryptoMap { const char* sym; const char* id; };
 extern const CryptoMap CRYPTO_MAP[];
 #define CRYPTO_MAP_SIZE 21
 
-// ── Commodity mapping (Finnhub OANDA symbols) ───────────
+// ── Commodity mapping (ETF tickers via Finnhub) ─────────
 struct CommodityMap { const char* sym; const char* finnhubSym; };
 extern const CommodityMap COMMODITY_MAP[];
 #define COMMODITY_MAP_SIZE 7
@@ -133,6 +133,8 @@ extern Preferences prefs;
 extern bool          spotifyReady;
 extern uint8_t       screenRotation;
 extern bool          screenOn;
+extern uint8_t       brightPlay;
+extern uint8_t       brightIdle;
 extern Playback      now;
 extern SemaphoreHandle_t dataMutex;
 
@@ -162,6 +164,7 @@ extern String        stockApiKey;
 extern volatile uint32_t      redrawFlags;
 extern volatile PendingAction  pendingAction;
 extern volatile bool           tickerListChanged;
+extern volatile bool           settingsChanged;
 
 // ── Function declarations ───────────────────────────────
 // display.cpp
