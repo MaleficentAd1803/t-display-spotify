@@ -135,11 +135,11 @@ void drawIdleClock() {
   lastTimeStr = timeStr;
 
   tft.setTextFont(4);
-  int tw = tft.textWidth(timeStr);
   int th = 26;
-  int cx = (SCR_W - tw) / 2;
+  // Use fixed clear width to avoid residue from proportional font width changes
+  int clearW = tft.textWidth("00:00:00") + 12;
   int cy = (SCR_H - th) / 2;
-  tft.fillRect(cx - 4, cy - 2, tw + 8, th + 4, TFT_BLACK);
+  tft.fillRect((SCR_W - clearW) / 2, cy - 2, clearW, th + 4, TFT_BLACK);
   tft.setTextColor(0x4208, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.drawString(timeStr, SCR_W / 2, SCR_H / 2);
@@ -149,7 +149,6 @@ void drawIdleClock() {
 
 // ── Right-side info panel ───────────────────────────────
 void drawInfo() {
-  tft.fillRect(SEP_X, 0, SCR_W - SEP_X, BAR_Y, TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (!now.active) {
@@ -165,6 +164,7 @@ void drawInfo() {
     return;
   }
 
+  tft.fillRect(SEP_X, 0, SCR_W - SEP_X, BAR_Y, TFT_BLACK);
   tft.fillRect(SEP_X, SEP_TOP, SEP_W, SEP_BOT - SEP_TOP, TFT_WHITE);
 
   tft.setFreeFont(&FreeSansBold9pt7b);

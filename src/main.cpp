@@ -307,10 +307,12 @@ static void onPrev() {
 static void onPlayPause() {
   if (!sp || !spotifyReady) return;
   xSemaphoreTake(dataMutex, portMAX_DELAY);
-  now.playing = !now.playing;
+  bool active = now.active;
+  if (active) now.playing = !now.playing;
   bool isPlaying = now.playing;
   xSemaphoreGive(dataMutex);
 
+  if (!active) return;
   Serial.printf("[Button] %s\n", isPlaying ? "Play" : "Pause");
   drawIcon(isPlaying);
   pendingAction = isPlaying ? ACTION_PLAY : ACTION_PAUSE;
@@ -343,12 +345,8 @@ static void onFlipScreen() {
   String imgUrl = now.imgUrl;
   xSemaphoreGive(dataMutex);
 
-  if (active) {
-    showAlbumArt(imgUrl);
-    drawInfo();
-  } else {
-    drawInfo();
-  }
+  if (active) showAlbumArt(imgUrl);
+  drawInfo();
 }
 
 // ============================================================
