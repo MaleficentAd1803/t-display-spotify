@@ -493,6 +493,7 @@ void setup() {
     showAlbumArt(now.imgUrl);
     drawInfo();
   } else {
+    analogWrite(BL_PIN, 128);
     drawInfo();  // idle screen
   }
 }
@@ -514,6 +515,7 @@ void loop() {
     redrawFlags = 0;
 
     if (flags & RFLAG_GONE_IDLE) {
+      analogWrite(BL_PIN, 128);
       tft.fillScreen(TFT_BLACK);
       drawInfo();
     }
