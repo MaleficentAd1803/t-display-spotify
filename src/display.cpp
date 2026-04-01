@@ -107,7 +107,7 @@ void drawClock() {
 // ── Scrolling title sprite ──────────────────────────────
 void drawTitle() {
   titleSpr.fillSprite(TFT_BLACK);
-  titleSpr.setFreeFont(&FreeSansBold9pt7b);
+  titleSpr.setFreeFont(&FreeSansBold9pt8b);
   titleSpr.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (titlePixelW <= TXT_W) {
@@ -167,7 +167,7 @@ void drawInfo() {
   tft.fillRect(SEP_X, 0, SCR_W - SEP_X, BAR_Y, TFT_BLACK);
   tft.fillRect(SEP_X, SEP_TOP, SEP_W, SEP_BOT - SEP_TOP, TFT_WHITE);
 
-  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setFreeFont(&FreeSansBold9pt8b);
   titlePixelW = tft.textWidth(now.track);
   tft.setTextFont(2);
   scrollX = 0;
@@ -175,12 +175,12 @@ void drawInfo() {
   scrollPauseAt = millis() + SCROLL_PAUSE_MS;
   drawTitle();
 
-  tft.setTextFont(2);
-  tft.setCursor(TXT_X, ARTIST_Y);
+  tft.setFreeFont(&FreeSans8pt8b);
+  tft.setCursor(TXT_X, ARTIST_Y + 9);
   tft.print(fitText(now.artist, TXT_W));
 
-  tft.setTextFont(2);
-  tft.setCursor(TXT_X, ALBUM_Y);
+  tft.setFreeFont(&FreeSans8pt8b);
+  tft.setCursor(TXT_X, ALBUM_Y + 9);
   tft.print(fitText(now.album, TXT_W));
 
   if (now.device.length() > 0) {

@@ -32,8 +32,8 @@
 #include <time.h>
 
 // ── Credentials ─────────────────────────────────────────
-const char* SPOTIFY_CLIENT_ID     = "YOUR_CLIENT_ID";
-const char* SPOTIFY_CLIENT_SECRET = "YOUR_CLIENT_SECRET";
+const char* SPOTIFY_CLIENT_ID     = "YOUR_SPOTIFY_CLIENT_ID";
+const char* SPOTIFY_CLIENT_SECRET = "YOUR_SPOTIFY_CLIENT_SECRET";
 
 // ── CoinGecko crypto ID mapping ─────────────────────────
 const CryptoMap CRYPTO_MAP[] = {
@@ -72,6 +72,13 @@ bool          screenOn       = true;
 uint8_t       brightPlay     = 255;
 uint8_t       brightIdle     = 128;
 Playback      now;
+
+// Brightness helper — digitalWrite for extremes avoids LEDC PWM glitches
+static void setBrightness(uint8_t val) {
+  if (val == 0)        { analogWrite(BL_PIN, 0); digitalWrite(BL_PIN, LOW); }
+  else if (val >= 255) { analogWrite(BL_PIN, 255); digitalWrite(BL_PIN, HIGH); }
+  else                 { analogWrite(BL_PIN, val); }
+}
 
 // Title scroll
 TFT_eSprite   titleSpr(&tft);
@@ -325,11 +332,11 @@ static void onScreenToggle() {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
     xSemaphoreGive(dataMutex);
-    analogWrite(BL_PIN, active ? brightPlay : brightIdle);
+    setBrightness(active ? brightPlay : brightIdle);
     lastTimeStr = "";
     bgLastPoll = 0;  // trigger immediate poll on core 0
   } else {
-    analogWrite(BL_PIN, 0);
+    setBrightness(0);
   }
 }
 
@@ -454,13 +461,13 @@ void setup() {
   delay(500);
 
   // ── Sprites ────────────────────────────────────────────
-  titleSpr.createSprite(TXT_W, TITLE_H);
+  titleSpr.createSprite(TXT_W + SCROLL_OVERFLOW, TITLE_H);
   titleSpr.setSwapBytes(true);
 
-  tickerSpr.createSprite(SCR_W, TICKER_H);
+  tickerSpr.createSprite(SCR_W + SCROLL_OVERFLOW, TICKER_H);
   tickerSpr.setSwapBytes(true);
   loadTickers();
-  stockApiKey = prefs.getString("stockkey", "");
+  stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
   brightPlay = prefs.getUChar("br_play", 255);
   brightIdle = prefs.getUChar("br_idle", 128);
   if (stockApiKey.length() == 0) {
@@ -491,11 +498,11 @@ void setup() {
   uint32_t initFlags = redrawFlags;
   redrawFlags = 0;
   if (initFlags & RFLAG_TRACK_CHANGED) {
-    if (initFlags & RFLAG_GONE_ACTIVE) analogWrite(BL_PIN, brightPlay);
+    setBrightness(brightPlay);
     showAlbumArt(now.imgUrl);
     drawInfo();
   } else {
-    analogWrite(BL_PIN, brightIdle);
+    setBrightness(brightIdle);
     drawInfo();  // idle screen
   }
 
@@ -521,7 +528,7 @@ void loop() {
     redrawFlags = 0;
 
     if (flags & RFLAG_GONE_IDLE) {
-      analogWrite(BL_PIN, brightIdle);
+      setBrightness(brightIdle);
       tft.fillScreen(TFT_BLACK);
       xSemaphoreTake(dataMutex, portMAX_DELAY);
       drawInfo();
@@ -529,8 +536,8 @@ void loop() {
     }
 
     if (flags & RFLAG_TRACK_CHANGED) {
+      setBrightness(brightPlay);
       if (flags & RFLAG_GONE_ACTIVE) {
-        analogWrite(BL_PIN, brightPlay);
         lastTimeStr = "";
       }
 
@@ -604,7 +611,7 @@ void loop() {
   if (tickerListChanged) {
     tickerListChanged = false;
     loadTickers();
-    stockApiKey = prefs.getString("stockkey", "");
+    stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
     tickerReady = false;
     tickerScrollX = 0;
     bgTickerFetchNeeded = true;
@@ -624,7 +631,7 @@ void loop() {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
     xSemaphoreGive(dataMutex);
-    analogWrite(BL_PIN, active ? brightPlay : brightIdle);
+    setBrightness(active ? brightPlay : brightIdle);
   }
 
   // ── Ticker scrolling (never interrupted by network) ───

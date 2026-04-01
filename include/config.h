@@ -14,6 +14,8 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <freertos/semphr.h>
+#include "FreeSansBold9pt8b.h"
+#include "FreeSans8pt8b.h"
 
 // ── Spotify Credentials ──────────────────────────────────
 extern const char* SPOTIFY_CLIENT_ID;
@@ -64,6 +66,7 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define SCROLL_MS       30
 #define SCROLL_PAUSE_MS 2000
 #define SCROLL_GAP      40
+#define SCROLL_OVERFLOW 30
 
 // ── Ticker ───────────────────────────────────────────────
 #define MAX_TICKERS      8
