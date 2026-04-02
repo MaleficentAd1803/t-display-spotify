@@ -272,6 +272,45 @@ String runOAuthFlow() {
     return "";
   }
 
+  // Also start a plain HTTP server on port 80 that redirects to HTTPS
+  httpd_config_t httpConfig = HTTPD_DEFAULT_CONFIG();
+  httpConfig.max_uri_handlers = 2;
+  httpConfig.stack_size = 4096;
+  httpd_handle_t httpServer = NULL;
+  httpd_start(&httpServer, &httpConfig);
+  if (httpServer) {
+    // Redirect any HTTP request to the HTTPS URL
+    static String httpsUrl;
+    httpsUrl = "https://" + ip;
+    httpd_uri_t redirect = {
+      .uri = "/", .method = HTTP_GET,
+      .handler = [](httpd_req_t* req) -> esp_err_t {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", httpsUrl.c_str());
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+      }
+    };
+    httpd_uri_t redirectCb = {
+      .uri = "/callback", .method = HTTP_GET,
+      .handler = [](httpd_req_t* req) -> esp_err_t {
+        char query[1024] = {0};
+        String loc = httpsUrl + "/callback";
+        if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+          loc += "?";
+          loc += query;
+        }
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", loc.c_str());
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+      }
+    };
+    httpd_register_uri_handler(httpServer, &redirect);
+    httpd_register_uri_handler(httpServer, &redirectCb);
+    Serial.println("[OAuth] HTTP redirect server on port 80");
+  }
+
   httpd_uri_t root_uri     = { .uri = "/",         .method = HTTP_GET, .handler = oauth_root_handler };
   httpd_uri_t callback_uri = { .uri = "/callback",  .method = HTTP_GET, .handler = oauth_callback_handler };
   httpd_register_uri_handler(server, &root_uri);
@@ -289,13 +328,13 @@ String runOAuthFlow() {
   tft.printf("https://%s/callback", ip.c_str());
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setCursor(10, 62);
-  tft.print("2. Open in browser & accept cert:");
+  tft.print("2. Open in browser:");
   tft.setTextColor(0x07E0, TFT_BLACK);
   tft.setCursor(10, 84);
-  tft.printf("https://%s", ip.c_str());
+  tft.printf("http://%s", ip.c_str());
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setCursor(10, 114);
-  tft.print("3. Click the Spotify login link");
+  tft.print("3. Accept cert & click login");
   tft.setCursor(10, 145);
   tft.setTextFont(1);
   tft.setTextColor(0x7BEF, TFT_BLACK);
@@ -310,6 +349,7 @@ String runOAuthFlow() {
   showStatus("Exchanging token...");
   String refreshToken = exchangeCodeForToken(oauthCode);
 
+  if (httpServer) httpd_stop(httpServer);
   httpd_ssl_stop(server);
 
   return refreshToken;
