@@ -16,6 +16,7 @@
 #include <freertos/semphr.h>
 #include "FreeSansBold9pt8b.h"
 #include "FreeSans8pt8b.h"
+#include "FreeSans5pt8b.h"
 
 // ── Spotify Credentials ──────────────────────────────────
 extern const char* SPOTIFY_CLIENT_ID;

@@ -73,11 +73,8 @@ uint8_t       brightPlay     = 255;
 uint8_t       brightIdle     = 128;
 Playback      now;
 
-// Brightness helper — digitalWrite for extremes avoids LEDC PWM glitches
 static void setBrightness(uint8_t val) {
-  if (val == 0)        { analogWrite(BL_PIN, 0); digitalWrite(BL_PIN, LOW); }
-  else if (val >= 255) { analogWrite(BL_PIN, 255); digitalWrite(BL_PIN, HIGH); }
-  else                 { analogWrite(BL_PIN, val); }
+  analogWrite(BL_PIN, val);
 }
 
 // Title scroll
@@ -366,7 +363,7 @@ void setup() {
   digitalWrite(PWR_EN, HIGH);
 
   pinMode(BL_PIN, OUTPUT);
-  digitalWrite(BL_PIN, HIGH);
+  analogWrite(BL_PIN, 255);
 
   // ── Boot-time button check ────────────────────────────
   pinMode(BTN_BOTTOM, INPUT_PULLUP);
@@ -536,6 +533,7 @@ void loop() {
     }
 
     if (flags & RFLAG_TRACK_CHANGED) {
+      Serial.printf("[Brightness] Track change, setting play=%d\n", brightPlay);
       setBrightness(brightPlay);
       if (flags & RFLAG_GONE_ACTIVE) {
         lastTimeStr = "";
@@ -623,6 +621,7 @@ void loop() {
     settingsChanged = false;
     brightPlay = prefs.getUChar("br_play", 255);
     brightIdle = prefs.getUChar("br_idle", 128);
+    Serial.printf("[Settings] Applied brightness: play=%d idle=%d\n", brightPlay, brightIdle);
     long gmt = prefs.getLong("gmtoff", 3600);
     long dst = prefs.getLong("dstoff", 0);
     configTime(gmt, dst, "pool.ntp.org", "time.nist.gov");

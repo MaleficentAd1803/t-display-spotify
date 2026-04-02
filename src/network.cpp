@@ -135,20 +135,20 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
     }
   }
 
-  // Brightness
+  // Brightness — always save and apply to avoid comparison/macro bugs
   if (!doc["bri"].isNull()) {
-    uint8_t newBri = constrain(doc["bri"] | 128, 10, 255);
-    if (newBri != prefs.getUChar("br_idle", 128)) {
-      prefs.putUChar("br_idle", newBri);
-      setChanged = true;
-    }
+    int rawBri = doc["bri"] | 128;
+    uint8_t newBri = (rawBri < 10) ? 10 : (rawBri > 255) ? 255 : (uint8_t)rawBri;
+    prefs.putUChar("br_idle", newBri);
+    setChanged = true;
+    Serial.printf("[Web] Idle brightness set to %d\n", newBri);
   }
   if (!doc["brp"].isNull()) {
-    uint8_t newBrp = constrain(doc["brp"] | 255, 10, 255);
-    if (newBrp != prefs.getUChar("br_play", 255)) {
-      prefs.putUChar("br_play", newBrp);
-      setChanged = true;
-    }
+    int rawBrp = doc["brp"] | 255;
+    uint8_t newBrp = (rawBrp < 10) ? 10 : (rawBrp > 255) ? 255 : (uint8_t)rawBrp;
+    prefs.putUChar("br_play", newBrp);
+    setChanged = true;
+    Serial.printf("[Web] Play brightness set to %d\n", newBrp);
   }
 
   doc.clear();

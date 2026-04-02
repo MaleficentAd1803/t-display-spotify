@@ -184,9 +184,9 @@ void drawInfo() {
   tft.print(fitText(now.album, TXT_W));
 
   if (now.device.length() > 0) {
-    tft.setTextFont(1);
+    tft.setFreeFont(&FreeSans5pt8b);
     tft.setTextColor(0x7BEF, TFT_BLACK);
-    tft.setCursor(TXT_X, DEVICE_Y);
+    tft.setCursor(TXT_X, DEVICE_Y + 7);
     tft.print(fitText(now.device, TXT_W));
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
   }
