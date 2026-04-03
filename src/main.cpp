@@ -74,6 +74,7 @@ uint8_t       brightIdle     = 128;
 Playback      now;
 
 static void setBrightness(uint8_t val) {
+  Serial.printf("[BL] setBrightness(%d)\n", val);
   analogWrite(BL_PIN, val);
 }
 
@@ -358,6 +359,8 @@ static void onFlipScreen() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
+  Serial.printf("\n[Boot] Reset reason: %d | Free heap: %u | Min heap: %u\n",
+                esp_reset_reason(), ESP.getFreeHeap(), ESP.getMinFreeHeap());
 
   pinMode(PWR_EN, OUTPUT);
   digitalWrite(PWR_EN, HIGH);
@@ -467,6 +470,7 @@ void setup() {
   stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
   brightPlay = prefs.getUChar("br_play", 255);
   brightIdle = prefs.getUChar("br_idle", 128);
+  Serial.printf("[Boot] Loaded brightness: play=%d idle=%d\n", brightPlay, brightIdle);
   if (stockApiKey.length() == 0) {
     Serial.println("[Ticker] No stock API key. Get free key at https://finnhub.io/register");
     Serial.println("[Ticker] Then send: STOCKKEY:your_key_here");

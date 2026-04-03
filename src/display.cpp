@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "config.h"
+#include <esp_task_wdt.h>
 
 // ── TJpg_Decoder block-render callback ──────────────────
 bool onJpgBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bmp) {
@@ -14,6 +15,12 @@ bool onJpgBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bmp) {
 // ── Download & draw album art JPEG ──────────────────────
 void showAlbumArt(const String& url) {
   if (url.isEmpty()) return;
+
+  // Check heap before allocating TLS buffers + image
+  if (ESP.getFreeHeap() < 80000) {
+    Serial.printf("[Art] Skipping — low heap: %u\n", ESP.getFreeHeap());
+    return;
+  }
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -30,7 +37,7 @@ void showAlbumArt(const String& url) {
   if (len <= 0 || len > 80000) { http.end(); return; }
 
   uint8_t* buf = (uint8_t*)malloc(len);
-  if (!buf) { http.end(); return; }
+  if (!buf) { Serial.println("[Art] malloc failed"); http.end(); return; }
 
   WiFiClient* stream = http.getStreamPtr();
   size_t got = 0;
@@ -41,8 +48,9 @@ void showAlbumArt(const String& url) {
     if (avail) {
       got += stream->readBytes(buf + got, min(avail, (size_t)(len - got)));
     } else {
-      delay(1);
+      delay(10);
     }
+    esp_task_wdt_reset();  // Feed watchdog during long downloads
   }
   http.end();
 
