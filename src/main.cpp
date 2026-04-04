@@ -71,11 +71,26 @@ uint8_t       screenRotation = 1;
 bool          screenOn       = true;
 uint8_t       brightPlay     = 255;
 uint8_t       brightIdle     = 128;
+uint8_t       brightCurrent  = 255;   // Tracks what brightness SHOULD be
+unsigned long brightSettingsAt = 0;   // When settings last changed brightness
+static bool   blIsGPIO        = true; // true when pin is in GPIO mode (not LEDC)
 Playback      now;
 
-static void setBrightness(uint8_t val) {
-  Serial.printf("[BL] setBrightness(%d)\n", val);
-  analogWrite(BL_PIN, val);
+static void setBrightness(uint8_t val, const char* src = "") {
+  brightCurrent = val;
+  if (val == 255) {
+    // Full brightness: use GPIO HIGH (same as boot — guaranteed DC, no PWM)
+    if (!blIsGPIO) { ledcDetachPin(BL_PIN); pinMode(BL_PIN, OUTPUT); blIsGPIO = true; }
+    digitalWrite(BL_PIN, HIGH);
+  } else if (val == 0) {
+    if (!blIsGPIO) { ledcDetachPin(BL_PIN); pinMode(BL_PIN, OUTPUT); blIsGPIO = true; }
+    digitalWrite(BL_PIN, LOW);
+  } else {
+    // Intermediate: use LEDC PWM
+    if (blIsGPIO) { ledcAttachPin(BL_PIN, BL_CHANNEL); blIsGPIO = false; }
+    ledcWrite(BL_CHANNEL, val);
+  }
+  Serial.printf("[BL] %s val=%d %s\n", src, val, blIsGPIO ? "GPIO" : "PWM");
 }
 
 // Title scroll
@@ -330,11 +345,11 @@ static void onScreenToggle() {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
     xSemaphoreGive(dataMutex);
-    setBrightness(active ? brightPlay : brightIdle);
+    setBrightness(active ? brightPlay : brightIdle, "screen-on");
     lastTimeStr = "";
     bgLastPoll = 0;  // trigger immediate poll on core 0
   } else {
-    setBrightness(0);
+    setBrightness(0, "screen-off");
   }
 }
 
@@ -366,7 +381,7 @@ void setup() {
   digitalWrite(PWR_EN, HIGH);
 
   pinMode(BL_PIN, OUTPUT);
-  analogWrite(BL_PIN, 255);
+  digitalWrite(BL_PIN, HIGH);   // Immediate backlight on during boot
 
   // ── Boot-time button check ────────────────────────────
   pinMode(BTN_BOTTOM, INPUT_PULLUP);
@@ -381,6 +396,10 @@ void setup() {
   tft.setRotation(screenRotation);
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  // Prepare LEDC timer for PWM brightness (pin stays in GPIO mode for now)
+  ledcSetup(BL_CHANNEL, BL_FREQ, BL_BITS);
+  // Pin is already HIGH via digitalWrite — setBrightness will attach LEDC only when needed
 
   // ── JPEG decoder ───────────────────────────────────────
   TJpgDec.setJpgScale(2);
@@ -499,11 +518,11 @@ void setup() {
   uint32_t initFlags = redrawFlags;
   redrawFlags = 0;
   if (initFlags & RFLAG_TRACK_CHANGED) {
-    setBrightness(brightPlay);
-    showAlbumArt(now.imgUrl);
+    setBrightness(brightPlay, "boot-play");
     drawInfo();
+    showAlbumArt(now.imgUrl);
   } else {
-    setBrightness(brightIdle);
+    setBrightness(brightIdle, "boot-idle");
     drawInfo();  // idle screen
   }
 
@@ -529,7 +548,8 @@ void loop() {
     redrawFlags = 0;
 
     if (flags & RFLAG_GONE_IDLE) {
-      setBrightness(brightIdle);
+      // Don't override brightness if user just changed settings (3s cooldown)
+      if (ms - brightSettingsAt > 3000) setBrightness(brightIdle, "idle");
       tft.fillScreen(TFT_BLACK);
       xSemaphoreTake(dataMutex, portMAX_DELAY);
       drawInfo();
@@ -537,8 +557,6 @@ void loop() {
     }
 
     if (flags & RFLAG_TRACK_CHANGED) {
-      Serial.printf("[Brightness] Track change, setting play=%d\n", brightPlay);
-      setBrightness(brightPlay);
       if (flags & RFLAG_GONE_ACTIVE) {
         lastTimeStr = "";
       }
@@ -549,11 +567,14 @@ void loop() {
       xSemaphoreGive(dataMutex);
 
       tft.fillScreen(TFT_BLACK);
-      showAlbumArt(imgUrl);
+      if (ms - brightSettingsAt > 3000) setBrightness(brightPlay, "track");
 
+      // Draw text first for instant feedback, then load art (slow TLS + download)
       xSemaphoreTake(dataMutex, portMAX_DELAY);
       drawInfo();
       xSemaphoreGive(dataMutex);
+
+      showAlbumArt(imgUrl);
     } else if (flags & RFLAG_DEVICE_CHANGED) {
       xSemaphoreTake(dataMutex, portMAX_DELAY);
       drawInfo();
@@ -634,7 +655,9 @@ void loop() {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
     xSemaphoreGive(dataMutex);
-    setBrightness(active ? brightPlay : brightIdle);
+    brightSettingsAt = millis();  // Prevent polls from overriding for 3s
+    uint8_t target = active ? brightPlay : brightIdle;
+    setBrightness(target, active ? "settings-play" : "settings-idle");
   }
 
   // ── Ticker scrolling (never interrupted by network) ───
@@ -649,6 +672,9 @@ void loop() {
 
   // ── Serial input ──────────────────────────────────────
   checkSerialInput();
+
+  // Drift detector removed — TFT_BL conflict (root cause) is already fixed,
+  // and the old safety net fought with LEDC's 0-256 range causing glitches.
 
   // ── CPU usage report ──────────────────────────────────
   core1BusyUs += micros() - loopStart;

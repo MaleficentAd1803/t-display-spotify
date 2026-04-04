@@ -12,34 +12,45 @@ bool onJpgBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bmp) {
   return true;
 }
 
+// ── Persistent TLS client for album art (avoids repeated handshakes) ──
+static WiFiClientSecure artClient;
+static HTTPClient       artHttp;
+static bool             artClientInit = false;
+static String           artLastHost;
+
 // ── Download & draw album art JPEG ──────────────────────
 void showAlbumArt(const String& url) {
   if (url.isEmpty()) return;
 
-  // Check heap before allocating TLS buffers + image
   if (ESP.getFreeHeap() < 80000) {
     Serial.printf("[Art] Skipping — low heap: %u\n", ESP.getFreeHeap());
     return;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  if (!artClientInit) {
+    artClient.setInsecure();
+    artHttp.setReuse(true);  // Keep TCP+TLS connection alive
+    artHttp.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    artHttp.setTimeout(10000);
+    artClientInit = true;
+  }
 
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(10000);
-  http.begin(client, url);
+  unsigned long t0 = millis();
+  artHttp.begin(artClient, url);
+  int code = artHttp.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[Art] HTTP %d (%lums)\n", code, millis() - t0);
+    artHttp.end();
+    return;
+  }
 
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) { http.end(); return; }
-
-  int len = http.getSize();
-  if (len <= 0 || len > 80000) { http.end(); return; }
+  int len = artHttp.getSize();
+  if (len <= 0 || len > 80000) { artHttp.end(); return; }
 
   uint8_t* buf = (uint8_t*)malloc(len);
-  if (!buf) { Serial.println("[Art] malloc failed"); http.end(); return; }
+  if (!buf) { Serial.println("[Art] malloc failed"); artHttp.end(); return; }
 
-  WiFiClient* stream = http.getStreamPtr();
+  WiFiClient* stream = artHttp.getStreamPtr();
   size_t got = 0;
   unsigned long deadline = millis() + 10000;
 
@@ -50,14 +61,16 @@ void showAlbumArt(const String& url) {
     } else {
       delay(10);
     }
-    esp_task_wdt_reset();  // Feed watchdog during long downloads
+    esp_task_wdt_reset();
   }
-  http.end();
+
+  Serial.printf("[Art] %u bytes in %lums\n", got, millis() - t0);
 
   if (got == (size_t)len) {
     TJpgDec.drawJpg(ART_X, ART_Y, buf, len);
   }
   free(buf);
+  // Don't call artHttp.end() — keep connection alive for next image
 }
 
 // ── Truncate string to fit pixel width ──────────────────

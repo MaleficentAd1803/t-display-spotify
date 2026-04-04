@@ -98,6 +98,7 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
     return ESP_FAIL;
   }
   buf[ret] = '\0';
+  Serial.printf("[Web] POST body (%d bytes): %s\n", ret, buf);
   JsonDocument doc;
   deserializeJson(doc, buf);
   const char* t = doc["tickers"] | "";
@@ -137,18 +138,20 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
 
   // Brightness — always save and apply to avoid comparison/macro bugs
   if (!doc["bri"].isNull()) {
-    int rawBri = doc["bri"] | 128;
+    int rawBri = doc["bri"].as<int>();
     uint8_t newBri = (rawBri < 10) ? 10 : (rawBri > 255) ? 255 : (uint8_t)rawBri;
     prefs.putUChar("br_idle", newBri);
     setChanged = true;
-    Serial.printf("[Web] Idle brightness set to %d\n", newBri);
+    Serial.printf("[Web] Idle brightness: raw=%d clamped=%d readback=%d\n",
+                  rawBri, newBri, prefs.getUChar("br_idle", 0));
   }
   if (!doc["brp"].isNull()) {
-    int rawBrp = doc["brp"] | 255;
+    int rawBrp = doc["brp"].as<int>();
     uint8_t newBrp = (rawBrp < 10) ? 10 : (rawBrp > 255) ? 255 : (uint8_t)rawBrp;
     prefs.putUChar("br_play", newBrp);
     setChanged = true;
-    Serial.printf("[Web] Play brightness set to %d\n", newBrp);
+    Serial.printf("[Web] Play brightness: raw=%d clamped=%d readback=%d\n",
+                  rawBrp, newBrp, prefs.getUChar("br_play", 0));
   }
 
   doc.clear();
