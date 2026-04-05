@@ -27,9 +27,7 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define BTN_TOP     0
 #define BTN_BOTTOM  14
 #define BL_PIN      38
-#define BL_CHANNEL  0
-#define BL_FREQ     5000
-#define BL_BITS     8
+#define BL_STEPS    16
 #define PWR_EN      15
 
 // ── Screen Geometry (landscape) ──────────────────────────

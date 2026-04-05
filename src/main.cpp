@@ -30,10 +30,11 @@
 #include "config.h"
 #include <WiFiManager.h>
 #include <time.h>
+#include <esp_task_wdt.h>
 
 // ── Credentials ─────────────────────────────────────────
-const char* SPOTIFY_CLIENT_ID     = "YOUR_SPOTIFY_CLIENT_ID";
-const char* SPOTIFY_CLIENT_SECRET = "YOUR_SPOTIFY_CLIENT_SECRET";
+const char* SPOTIFY_CLIENT_ID     = "YOUR_CLIENT_ID";
+const char* SPOTIFY_CLIENT_SECRET = "YOUR_CLIENT_SECRET";
 
 // ── CoinGecko crypto ID mapping ─────────────────────────
 const CryptoMap CRYPTO_MAP[] = {
@@ -69,28 +70,41 @@ SemaphoreHandle_t dataMutex;
 bool          spotifyReady   = false;
 uint8_t       screenRotation = 1;
 bool          screenOn       = true;
-uint8_t       brightPlay     = 255;
-uint8_t       brightIdle     = 128;
-uint8_t       brightCurrent  = 255;   // Tracks what brightness SHOULD be
-unsigned long brightSettingsAt = 0;   // When settings last changed brightness
-static bool   blIsGPIO        = true; // true when pin is in GPIO mode (not LEDC)
+uint8_t       brightPlay     = 16;     // 1-16 backlight levels
+uint8_t       brightIdle     = 8;
+uint8_t       brightCurrent  = 16;
+unsigned long brightSettingsAt = 0;
+static uint8_t blLevel       = 0;     // Backlight chip state: 0=off, 1-16
 Playback      now;
 
+// T-Display S3 backlight uses a one-wire pulse protocol (NOT PWM).
+// The chip has 16 brightness levels. Each LOW→HIGH pulse decrements
+// by one step (wrapping from 1 back to 16). Pulling LOW for >3ms resets to off.
+// Pulling HIGH from off starts at max (16).
 static void setBrightness(uint8_t val, const char* src = "") {
+  if (val > BL_STEPS) val = BL_STEPS;
   brightCurrent = val;
-  if (val == 255) {
-    // Full brightness: use GPIO HIGH (same as boot — guaranteed DC, no PWM)
-    if (!blIsGPIO) { ledcDetachPin(BL_PIN); pinMode(BL_PIN, OUTPUT); blIsGPIO = true; }
-    digitalWrite(BL_PIN, HIGH);
-  } else if (val == 0) {
-    if (!blIsGPIO) { ledcDetachPin(BL_PIN); pinMode(BL_PIN, OUTPUT); blIsGPIO = true; }
+  if (val == 0) {
     digitalWrite(BL_PIN, LOW);
-  } else {
-    // Intermediate: use LEDC PWM
-    if (blIsGPIO) { ledcAttachPin(BL_PIN, BL_CHANNEL); blIsGPIO = false; }
-    ledcWrite(BL_CHANNEL, val);
+    delay(3);
+    blLevel = 0;
+    Serial.printf("[BL] %s level=0 (off)\n", src);
+    return;
   }
-  Serial.printf("[BL] %s val=%d %s\n", src, val, blIsGPIO ? "GPIO" : "PWM");
+  if (blLevel == 0) {
+    digitalWrite(BL_PIN, HIGH);
+    blLevel = BL_STEPS;
+    delayMicroseconds(30);
+  }
+  int from = BL_STEPS - blLevel;
+  int to   = BL_STEPS - val;
+  int pulses = (BL_STEPS + to - from) % BL_STEPS;
+  for (int i = 0; i < pulses; i++) {
+    digitalWrite(BL_PIN, LOW);
+    digitalWrite(BL_PIN, HIGH);
+  }
+  blLevel = val;
+  Serial.printf("[BL] %s level=%d (pulses=%d)\n", src, val, pulses);
 }
 
 // Title scroll
@@ -245,6 +259,9 @@ static void pollSpotifyData() {
 //  to render smooth animations without interruption.
 // ============================================================
 static void backgroundTask(void* param) {
+  // Unsubscribe IDLE0 from task watchdog — Spotify API calls can block
+  // Core 0 for several seconds during TLS handshakes, starving IDLE0.
+  esp_task_wdt_delete(xTaskGetIdleTaskHandleForCPU(0));
   Serial.println("[BG] Background task started on core 0");
 
   while (true) {
@@ -381,7 +398,10 @@ void setup() {
   digitalWrite(PWR_EN, HIGH);
 
   pinMode(BL_PIN, OUTPUT);
-  digitalWrite(BL_PIN, HIGH);   // Immediate backlight on during boot
+  digitalWrite(BL_PIN, LOW);
+  delay(5);                     // Reset backlight chip (needs >3ms LOW)
+  digitalWrite(BL_PIN, HIGH);   // Chip starts at max brightness (level 16)
+  blLevel = BL_STEPS;
 
   // ── Boot-time button check ────────────────────────────
   pinMode(BTN_BOTTOM, INPUT_PULLUP);
@@ -396,10 +416,6 @@ void setup() {
   tft.setRotation(screenRotation);
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  // Prepare LEDC timer for PWM brightness (pin stays in GPIO mode for now)
-  ledcSetup(BL_CHANNEL, BL_FREQ, BL_BITS);
-  // Pin is already HIGH via digitalWrite — setBrightness will attach LEDC only when needed
 
   // ── JPEG decoder ───────────────────────────────────────
   TJpgDec.setJpgScale(2);
@@ -486,9 +502,12 @@ void setup() {
   tickerSpr.createSprite(SCR_W + SCROLL_OVERFLOW, TICKER_H);
   tickerSpr.setSwapBytes(true);
   loadTickers();
-  stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
-  brightPlay = prefs.getUChar("br_play", 255);
-  brightIdle = prefs.getUChar("br_idle", 128);
+  stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
+  brightPlay = prefs.getUChar("br_play", 16);
+  brightIdle = prefs.getUChar("br_idle", 8);
+  // Migrate old 0-255 range values to 0-16 range
+  if (brightPlay > BL_STEPS) { brightPlay = BL_STEPS; prefs.putUChar("br_play", brightPlay); }
+  if (brightIdle > BL_STEPS) { brightIdle = BL_STEPS / 2; prefs.putUChar("br_idle", brightIdle); }
   Serial.printf("[Boot] Loaded brightness: play=%d idle=%d\n", brightPlay, brightIdle);
   if (stockApiKey.length() == 0) {
     Serial.println("[Ticker] No stock API key. Get free key at https://finnhub.io/register");
@@ -634,7 +653,7 @@ void loop() {
   if (tickerListChanged) {
     tickerListChanged = false;
     loadTickers();
-    stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
+    stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
     tickerReady = false;
     tickerScrollX = 0;
     bgTickerFetchNeeded = true;
@@ -644,8 +663,8 @@ void loop() {
   // ── Settings changed (brightness/timezone) via web UI ──
   if (settingsChanged) {
     settingsChanged = false;
-    brightPlay = prefs.getUChar("br_play", 255);
-    brightIdle = prefs.getUChar("br_idle", 128);
+    brightPlay = prefs.getUChar("br_play", 16);
+    brightIdle = prefs.getUChar("br_idle", 8);
     Serial.printf("[Settings] Applied brightness: play=%d idle=%d\n", brightPlay, brightIdle);
     long gmt = prefs.getLong("gmtoff", 3600);
     long dst = prefs.getLong("dstoff", 0);
@@ -672,9 +691,6 @@ void loop() {
 
   // ── Serial input ──────────────────────────────────────
   checkSerialInput();
-
-  // Drift detector removed — TFT_BL conflict (root cause) is already fixed,
-  // and the old safety net fought with LEDC's 0-256 range causing glitches.
 
   // ── CPU usage report ──────────────────────────────────
   core1BusyUs += micros() - loopStart;

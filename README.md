@@ -27,7 +27,7 @@ A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST778
 | Board | LilyGO T-Display S3 (ESP32-S3) |
 | Display | ST7789 320x170, 8-bit parallel interface |
 | Buttons | TOP (GPIO 0), BOTTOM (GPIO 14) |
-| Backlight | GPIO 38 |
+| Backlight | GPIO 38, one-wire pulse protocol (16 brightness levels) |
 | Power enable | GPIO 15 |
 
 ## Controls
@@ -113,7 +113,7 @@ The idle screen shows a scrolling ticker with stock, crypto, and commodity price
 - Add, remove, and reorder ticker symbols
 - Set your Finnhub API key
 - Configure timezone (UTC offset + DST)
-- Adjust playing and idle brightness separately
+- Adjust playing and idle brightness separately (16 hardware levels)
 
 The web UI only reloads what actually changed — adjusting brightness won't trigger a ticker reload.
 

@@ -44,10 +44,10 @@ label{color:#888;font-size:.85em;display:block;margin:16px 0 4px}
 <h1 style="margin-top:24px">Settings</h1>
 <label>UTC Offset (hours)</label>
 <div style="display:flex;gap:8px;align-items:center"><input type="number" class="key" id="gmt" step="0.5" min="-12" max="14" style="width:90px"><label style="margin:0;color:#fff;font-size:.9em"><input type="checkbox" id="dst"> DST (+1h)</label></div>
-<label>Playing Brightness: <span id="brpv"></span></label>
-<input type="range" id="brp" min="10" max="255" oninput="updBr()">
-<label>Idle Brightness: <span id="briv"></span></label>
-<input type="range" id="bri" min="10" max="255" oninput="updBr()">
+<label>Playing Brightness: <span id="brpv"></span>/16</label>
+<input type="range" id="brp" min="1" max="16" oninput="updBr()">
+<label>Idle Brightness: <span id="briv"></span>/16</label>
+<input type="range" id="bri" min="1" max="16" oninput="updBr()">
 <button class="sv" onclick="save()">Save Changes</button>
 <div class="msg" id="msg"></div><script>
 const C=['BTC','ETH','SOL','ADA','XRP','DOGE','DOT','AVAX','BNB','LTC','LINK','SHIB','MATIC','UNI','ATOM','PEPE','ARB','OP','SUI','APT','XMR'];
@@ -61,10 +61,10 @@ function mv(i,d){let j=i+d;if(j<0||j>=T.length)return;[T[i],T[j]]=[T[j],T[i]];re
 function del(i){T.splice(i,1);render();}
 function addT(){let s=document.getElementById('sym'),v=s.value.trim().toUpperCase();if(v&&v.length<=7&&!T.includes(v)&&T.length<8){T.push(v);render();}s.value='';s.focus();}
 function updBr(){document.getElementById('briv').textContent=document.getElementById('bri').value;document.getElementById('brpv').textContent=document.getElementById('brp').value;}
-function save(){fetch('/api/tickers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tickers:T.join(','),key:document.getElementById('apikey').value.trim(),gmt:parseFloat(document.getElementById('gmt').value)||0,dst:document.getElementById('dst').checked?1:0,bri:parseInt(document.getElementById('bri').value)||128,brp:parseInt(document.getElementById('brp').value)||255})})
+function save(){fetch('/api/tickers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tickers:T.join(','),key:document.getElementById('apikey').value.trim(),gmt:parseFloat(document.getElementById('gmt').value)||0,dst:document.getElementById('dst').checked?1:0,bri:parseInt(document.getElementById('bri').value)||8,brp:parseInt(document.getElementById('brp').value)||16})})
 .then(r=>r.json()).then(d=>{msg(d.ok?'Saved! Settings applied.':'Error.')}).catch(()=>msg('Connection error.'));}
 function msg(s){let m=document.getElementById('msg');m.textContent=s;setTimeout(()=>m.textContent='',4000);}
-fetch('/api/tickers').then(r=>r.json()).then(d=>{T=d.tickers?d.tickers.split(',').filter(s=>s):[];document.getElementById('apikey').value=d.key||'';document.getElementById('gmt').value=d.gmt||0;document.getElementById('dst').checked=!!d.dst;document.getElementById('brp').value=d.brp||255;document.getElementById('bri').value=d.bri||128;updBr();render();});
+fetch('/api/tickers').then(r=>r.json()).then(d=>{T=d.tickers?d.tickers.split(',').filter(s=>s):[];document.getElementById('apikey').value=d.key||'';document.getElementById('gmt').value=d.gmt||0;document.getElementById('dst').checked=!!d.dst;document.getElementById('brp').value=d.brp||16;document.getElementById('bri').value=d.bri||8;updBr();render();});
 </script></body></html>)rawliteral";
 
 // ── Config web handlers ─────────────────────────────────
@@ -76,11 +76,11 @@ static esp_err_t config_page_handler(httpd_req_t* req) {
 
 static esp_err_t api_get_tickers_handler(httpd_req_t* req) {
   String list = prefs.getString("tickers", "NVDA,LMT,PLTR,BTC,XMR,ETH");
-  String key = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
+  String key = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
   long gmt = prefs.getLong("gmtoff", 3600);
   long dst = prefs.getLong("dstoff", 0);
-  int bri = prefs.getUChar("br_idle", 128);
-  int brp = prefs.getUChar("br_play", 255);
+  int bri = prefs.getUChar("br_idle", 8);
+  int brp = prefs.getUChar("br_play", 16);
   char json[384];
   snprintf(json, sizeof(json),
     "{\"tickers\":\"%s\",\"key\":\"%s\",\"gmt\":%.1f,\"dst\":%d,\"bri\":%d,\"brp\":%d}",
@@ -106,7 +106,7 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
 
   // Read old values to compare
   String oldTickers = prefs.getString("tickers", "NVDA,LMT,PLTR,BTC,XMR,ETH");
-  String oldKey = prefs.getString("stockkey", "YOUR_FINNHUB_API_KEY");
+  String oldKey = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
   bool tickersChanged = false;
   bool setChanged = false;
 
@@ -139,19 +139,17 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
   // Brightness — always save and apply to avoid comparison/macro bugs
   if (!doc["bri"].isNull()) {
     int rawBri = doc["bri"].as<int>();
-    uint8_t newBri = (rawBri < 10) ? 10 : (rawBri > 255) ? 255 : (uint8_t)rawBri;
+    uint8_t newBri = (rawBri < 1) ? 1 : (rawBri > 16) ? 16 : (uint8_t)rawBri;
     prefs.putUChar("br_idle", newBri);
     setChanged = true;
-    Serial.printf("[Web] Idle brightness: raw=%d clamped=%d readback=%d\n",
-                  rawBri, newBri, prefs.getUChar("br_idle", 0));
+    Serial.printf("[Web] Idle brightness: raw=%d level=%d\n", rawBri, newBri);
   }
   if (!doc["brp"].isNull()) {
     int rawBrp = doc["brp"].as<int>();
-    uint8_t newBrp = (rawBrp < 10) ? 10 : (rawBrp > 255) ? 255 : (uint8_t)rawBrp;
+    uint8_t newBrp = (rawBrp < 1) ? 1 : (rawBrp > 16) ? 16 : (uint8_t)rawBrp;
     prefs.putUChar("br_play", newBrp);
     setChanged = true;
-    Serial.printf("[Web] Play brightness: raw=%d clamped=%d readback=%d\n",
-                  rawBrp, newBrp, prefs.getUChar("br_play", 0));
+    Serial.printf("[Web] Play brightness: raw=%d level=%d\n", rawBrp, newBrp);
   }
 
   doc.clear();
