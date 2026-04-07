@@ -31,6 +31,7 @@
 #include <WiFiManager.h>
 #include <time.h>
 #include <esp_task_wdt.h>
+#include <mbedtls/base64.h>
 
 // ── Credentials ─────────────────────────────────────────
 const char* SPOTIFY_CLIENT_ID     = "YOUR_CLIENT_ID";
@@ -148,107 +149,225 @@ static unsigned long bgLastTickerFetch = 0;
 static unsigned long bgLastWifi       = 0;
 static bool          bgTickerFetchNeeded = true;  // fetch on first idle
 
-// ============================================================
-//  Spotify data fetch (runs on core 0 — no drawing!)
-// ============================================================
-static void pollSpotifyData() {
-  if (!sp || !spotifyReady) return;
+// ── Persistent Spotify polling client (keep-alive TLS) ──
+static WiFiClientSecure pollClient;
+static HTTPClient       pollHttp;
+static bool             pollClientInit = false;
+static String           accessToken;
+static String           lastETag;
+static const char*      etagHeader = "ETag";
 
-  Serial.printf("[Poll] Free heap: %u bytes\n", ESP.getFreeHeap());
+// ── JSON filter for Spotify response (built once) ───────
+static JsonDocument     pollFilter;
+static bool             pollFilterInit = false;
 
-  if (ESP.getFreeHeap() < 50000) {
-    Serial.println("[Poll] Low memory — recreating Spotify client");
-    String rtoken = prefs.getString("rtoken", "");
-    delete sp;
-    sp = new Spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, rtoken.c_str());
-    sp->begin();
-    Serial.printf("[Poll] Heap after recreate: %u bytes\n", ESP.getFreeHeap());
+// ── Refresh the Spotify access token ────────────────────
+static bool refreshAccessToken() {
+  Serial.println("[Token] Refreshing access token...");
+  WiFiClientSecure tokenClient;
+  tokenClient.setInsecure();
+  HTTPClient http;
+  http.begin(tokenClient, "https://accounts.spotify.com/api/token");
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  String creds = String(SPOTIFY_CLIENT_ID) + ":" + String(SPOTIFY_CLIENT_SECRET);
+  char b64[256];
+  size_t outLen = 0;
+  mbedtls_base64_encode((unsigned char*)b64, sizeof(b64), &outLen,
+                        (const unsigned char*)creds.c_str(), creds.length());
+  b64[outLen] = 0;
+  http.addHeader("Authorization", String("Basic ") + b64);
+
+  String rtoken = prefs.getString("rtoken", "");
+  String body = "grant_type=refresh_token&refresh_token=" + rtoken;
+  int code = http.POST(body);
+
+  if (code == 200) {
+    JsonDocument doc;
+    deserializeJson(doc, http.getStream());
+    accessToken = doc["access_token"] | "";
+    // Spotify may issue a new refresh token
+    const char* newRt = doc["refresh_token"] | (const char*)nullptr;
+    if (newRt && strlen(newRt) > 0) {
+      prefs.putString("rtoken", newRt);
+      Serial.println("[Token] New refresh token saved");
+    }
+    http.end();
+    Serial.printf("[Token] Access token obtained (%d chars)\n", accessToken.length());
+    return accessToken.length() > 0;
   }
 
-  response res = sp->current_playback_state();
-  Serial.printf("[Poll] Status: %d\n", res.status_code);
+  Serial.printf("[Token] Refresh failed: %d\n", code);
+  http.end();
+  return false;
+}
 
-  if (res.status_code == 200) {
-    String trk  = res.reply["item"]["name"]              | "";
-    String alb  = res.reply["item"]["album"]["name"]     | "";
-    int    prog = res.reply["progress_ms"]               | 0;
-    int    dur  = res.reply["item"]["duration_ms"]       | 0;
-    bool   play = res.reply["is_playing"]                | false;
+// ============================================================
+//  Spotify data fetch (runs on core 0 — no drawing!)
+//  Uses persistent TLS connection, ETag caching, and stream
+//  parsing with a JSON filter for minimal memory usage.
+// ============================================================
+static void pollSpotifyData() {
+  if (!spotifyReady) return;
 
-    String art;
-    JsonArray artists = res.reply["item"]["artists"];
-    if (artists.size() > 0) art = artists[0]["name"] | "";
+  // One-time init: persistent TLS client + JSON filter
+  if (!pollClientInit) {
+    pollClient.setInsecure();
+    pollHttp.setReuse(true);
+    pollHttp.setTimeout(10000);
+    pollHttp.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    pollHttp.collectHeaders(&etagHeader, 1);
+    pollClientInit = true;
+  }
+  if (!pollFilterInit) {
+    pollFilter["progress_ms"] = true;
+    pollFilter["is_playing"] = true;
+    pollFilter["item"]["id"] = true;
+    pollFilter["item"]["name"] = true;
+    pollFilter["item"]["artists"][0]["name"] = true;
+    pollFilter["item"]["album"]["name"] = true;
+    pollFilter["item"]["album"]["images"][0]["url"] = true;
+    pollFilter["item"]["duration_ms"] = true;
+    pollFilter["device"]["name"] = true;
+    pollFilterInit = true;
+  }
 
-    String dev  = res.reply["device"]["name"]              | "";
+  // Get access token if we don't have one yet
+  if (accessToken.length() == 0 && !refreshAccessToken()) {
+    Serial.println("[Poll] No access token — skipping");
+    return;
+  }
 
-    String img;
-    JsonArray images = res.reply["item"]["album"]["images"];
-    if (images.size() > 1)      img = images[1]["url"] | "";
-    else if (images.size() > 0) img = images[0]["url"] | "";
+  Serial.printf("[Poll] Heap: %u\n", ESP.getFreeHeap());
 
+  pollHttp.begin(pollClient, "https://api.spotify.com/v1/me/player");
+  pollHttp.addHeader("Authorization", "Bearer " + accessToken);
+  pollHttp.addHeader("Connection", "keep-alive");
+  if (lastETag.length() > 0) {
+    pollHttp.addHeader("If-None-Match", lastETag);
+  }
+
+  unsigned long t0 = millis();
+  int code = pollHttp.GET();
+  unsigned long rtt = millis() - t0;
+
+  if (code == 304) {
+    // Not Modified — nothing changed, just update poll time for interpolation
+    Serial.printf("[Poll] 304 (%lums)\n", rtt);
     xSemaphoreTake(dataMutex, portMAX_DELAY);
+    if (now.active) now.pollTime = millis();
+    xSemaphoreGive(dataMutex);
+    pollHttp.end();
+    return;
+  }
 
-    // If not playing and we're already idle, stay idle
-    if (!play && !now.active) {
-      Serial.printf("[Poll] Paused & idle — staying idle (%s)\n", trk.c_str());
-      xSemaphoreGive(dataMutex);
-      res.reply.clear();
+  if (code == 200) {
+    // Capture ETag for next request
+    if (pollHttp.hasHeader("ETag")) {
+      lastETag = pollHttp.header("ETag");
+    }
+
+    // Stream-parse with filter — only extracts fields we need
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, pollHttp.getStream(),
+                                               DeserializationOption::Filter(pollFilter));
+    pollHttp.end();
+
+    if (err) {
+      Serial.printf("[Poll] JSON error: %s (%lums)\n", err.c_str(), rtt);
       return;
     }
 
-    bool wasInactive   = !now.active;
-    bool trackChanged  = (trk != now.track || img != now.imgUrl);
-    bool deviceChanged = (dev != now.device);
-    bool playChanged   = (play != now.playing);
+    String tid  = doc["item"]["id"] | "";
+    int    prog = doc["progress_ms"] | 0;
+    bool   play = doc["is_playing"] | false;
 
-    now.track    = trk;
-    now.artist   = art;
-    now.album    = alb;
-    now.device   = dev;
-    now.imgUrl   = img;
-    now.progress = prog;
-    now.duration = dur;
-    now.playing  = play;
-    now.pollTime = millis();
-    now.active   = true;
+    // Check if track ID changed (triggers full metadata redraw)
+    xSemaphoreTake(dataMutex, portMAX_DELAY);
+    bool wasInactive = !now.active;
+    bool idChanged   = (tid != now.trackId) || wasInactive;
 
-    xSemaphoreGive(dataMutex);
+    // If paused and already idle, just stay idle
+    if (!play && !now.active && !idChanged) {
+      xSemaphoreGive(dataMutex);
+      Serial.printf("[Poll] Idle, no change (%lums)\n", rtt);
+      return;
+    }
 
-    Serial.printf("[Poll] Track: %s | Artist: %s | Device: %s | Playing: %d\n",
-                  trk.c_str(), art.c_str(), dev.c_str(), play);
+    if (idChanged) {
+      // ── Full metadata update ──
+      String trk = doc["item"]["name"] | "";
+      String alb = doc["item"]["album"]["name"] | "";
+      int    dur = doc["item"]["duration_ms"] | 0;
+      String art;
+      JsonArray artists = doc["item"]["artists"];
+      if (artists.size() > 0) art = artists[0]["name"] | "";
+      String dev = doc["device"]["name"] | "";
+      String img;
+      JsonArray images = doc["item"]["album"]["images"];
+      if (images.size() > 1)      img = images[1]["url"] | "";
+      else if (images.size() > 0) img = images[0]["url"] | "";
 
-    // Set redraw flags (read by core 1)
-    if (trackChanged || wasInactive) {
+      now.trackId  = tid;
+      now.track    = trk;
+      now.artist   = art;
+      now.album    = alb;
+      now.device   = dev;
+      now.imgUrl   = img;
+      now.progress = prog;
+      now.duration = dur;
+      now.playing  = play;
+      now.pollTime = millis();
+      now.active   = true;
+      xSemaphoreGive(dataMutex);
+
+      Serial.printf("[Poll] New track: %s | %s (%lums)\n", trk.c_str(), art.c_str(), rtt);
       if (wasInactive) redrawFlags |= RFLAG_GONE_ACTIVE;
       redrawFlags |= RFLAG_TRACK_CHANGED;
-    } else if (deviceChanged) {
-      redrawFlags |= RFLAG_DEVICE_CHANGED;
-    } else if (playChanged) {
-      redrawFlags |= RFLAG_PLAY_CHANGED;
+
+    } else {
+      // ── Same track — lightweight update (progress + play state) ──
+      bool playChanged   = (play != now.playing);
+      String dev = doc["device"]["name"] | "";
+      bool deviceChanged = (dev != now.device);
+      if (deviceChanged) now.device = dev;
+      now.progress = prog;
+      now.playing  = play;
+      now.pollTime = millis();
+      xSemaphoreGive(dataMutex);
+
+      Serial.printf("[Poll] Update: prog=%d play=%d (%lums)\n", prog, play, rtt);
+      if (deviceChanged)       redrawFlags |= RFLAG_DEVICE_CHANGED;
+      else if (playChanged)    redrawFlags |= RFLAG_PLAY_CHANGED;
+      // No flag = progress-only (handled by interpolation in loop)
     }
 
-    res.reply.clear();
-
-  } else if (res.status_code == 204) {
-    Serial.println("[Poll] Nothing playing (204)");
+  } else if (code == 204) {
+    pollHttp.end();
+    Serial.printf("[Poll] Nothing playing (%lums)\n", rtt);
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool wasActive = now.active;
-    if (wasActive) {
-      now = Playback{};
-    }
+    if (wasActive) now = Playback{};
     xSemaphoreGive(dataMutex);
     if (wasActive) {
       redrawFlags |= RFLAG_GONE_IDLE;
       bgTickerFetchNeeded = true;
+      lastETag = "";
     }
+
+  } else if (code == 401) {
+    pollHttp.end();
+    Serial.printf("[Poll] 401 — refreshing token (%lums)\n", rtt);
+    accessToken = "";
+    lastETag = "";
+    refreshAccessToken();
+
   } else {
-    Serial.printf("[Poll] API error: %d\n", res.status_code);
-    if (res.status_code == 401) {
-      Serial.println("[Poll] 401 Unauthorized — recreating Spotify client");
-      String rtoken = prefs.getString("rtoken", "");
-      delete sp;
-      sp = new Spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, rtoken.c_str());
-      sp->begin();
+    pollHttp.end();
+    Serial.printf("[Poll] HTTP %d (%lums)\n", code, rtt);
+    if (code < 0) {
+      // Connection lost — reset client for fresh TLS handshake
+      pollClient.stop();
     }
   }
 }
@@ -489,6 +608,13 @@ void setup() {
 
   sp = new Spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, refreshToken.c_str());
   sp->begin();
+
+  // Get initial access token for direct API polling
+  if (!refreshAccessToken()) {
+    showStatus("Token failed!", "Retrying...");
+    delay(2000);
+    refreshAccessToken();  // One retry
+  }
 
   spotifyReady = true;
   showStatus("Spotify ready!");

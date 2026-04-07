@@ -116,6 +116,7 @@ struct TickerItem {
 
 // ── Playback state ──────────────────────────────────────
 struct Playback {
+  String trackId;
   String track;
   String artist;
   String album;

@@ -19,6 +19,7 @@ A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST778
 - **Screen flip** — long-press to rotate 180°, saved to NVS
 - **Screen on/off** — double-click to toggle the backlight
 - **Dual-core architecture** — rendering on core 1, network on core 0 for smooth animations
+- **Optimized polling** — persistent TLS connection, ETag/304 caching, stream-parsed JSON with field filtering, track-ID delta logic
 
 ## Hardware
 
@@ -147,6 +148,15 @@ The ESP32-S3's dual cores are used to keep animations smooth:
 - **Core 1** (foreground) — all rendering, scroll animations, button detection, clock updates
 
 A FreeRTOS mutex protects shared playback state. Volatile flags signal redraw requests from core 0 to core 1.
+
+### Spotify Polling Optimizations
+
+The 1-second polling loop bypasses the SpotifyEsp32 library for reads and uses a direct HTTP client with several optimizations:
+
+- **Persistent TLS (keep-alive)** — a single `WiFiClientSecure` + `HTTPClient` is reused across all polls, avoiding the ~1-2s TLS handshake on every request
+- **ETag / 304 Not Modified** — the `ETag` response header is stored and sent back as `If-None-Match`; if nothing changed, Spotify returns 304 and all JSON parsing is skipped
+- **Stream parsing with filter** — `deserializeJson` reads directly from the HTTP stream with a field filter that only extracts the 9 fields needed, avoiding buffering the full ~5KB response
+- **Track-ID delta logic** — if `item.id` hasn't changed, only progress and play state are updated; full metadata redraw and album art download only happen on actual track changes
 
 ## Libraries
 
