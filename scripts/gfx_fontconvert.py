@@ -69,8 +69,6 @@ def generate_font(ttf_path, pt_size, first, last, font_name):
     lines.append(f"// Range: U+{first:04X} to U+{last:04X} ({last - first + 1} glyphs)")
     lines.append(f"// Bitmap size: {len(bitmaps)} bytes")
     lines.append("")
-    lines.append("#include <Adafruit_GFX.h>")
-    lines.append("")
 
     # Bitmap array
     lines.append(f"const uint8_t {font_name}Bitmaps[] PROGMEM = {{")

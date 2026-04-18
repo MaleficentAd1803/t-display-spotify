@@ -47,10 +47,10 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define TXT_W       (SCR_W - TXT_X - 4)
 #define TITLE_Y     6
 #define TITLE_H     22
-#define TITLE_BL    16
-#define ARTIST_Y    30
-#define ALBUM_Y     50
-#define DEVICE_Y    72
+#define TITLE_BL    17
+#define ARTIST_Y    34
+#define ALBUM_Y     54
+#define DEVICE_Y    76
 #define ICON_W      12
 #define ICON_H      16
 #define ICON_MARGIN 14
