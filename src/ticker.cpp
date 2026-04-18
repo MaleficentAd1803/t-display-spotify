@@ -4,6 +4,22 @@
 
 #include "config.h"
 
+// ── Persistent TLS clients (keep-alive across fetches) ──
+static WiFiClientSecure cgClient;
+static HTTPClient       cgHttp;
+static bool             cgInit = false;
+
+static WiFiClientSecure fhClient;
+static HTTPClient       fhHttp;
+static bool             fhInit = false;
+
+// ── Format "<SYM> $<price> " with tier-appropriate precision
+static void formatPrice(char* buf, size_t n, const char* sym, float price) {
+  if (price >= 1000)     snprintf(buf, n, "%s $%.0f ", sym, price);
+  else if (price >= 1)   snprintf(buf, n, "%s $%.2f ", sym, price);
+  else                   snprintf(buf, n, "%s $%.4f ", sym, price);
+}
+
 // ── Lookup CoinGecko ID for a crypto symbol ─────────────
 const char* getCoinGeckoId(const char* sym) {
   for (int i = 0; i < (int)CRYPTO_MAP_SIZE; i++) {
@@ -22,7 +38,7 @@ const char* getCommodityFinnhubSymbol(const char* sym) {
 
 // ── Load ticker list from NVS ───────────────────────────
 void loadTickers() {
-  String list = prefs.getString("tickers", "NVDA,LMT,PLTR,BTC,XMR,ETH");
+  String list = prefs.getString("tickers", DEFAULT_TICKERS);
   Serial.printf("[Ticker] List: %s\n", list.c_str());
   numTickers = 0;
   int start = 0;
@@ -49,34 +65,38 @@ void loadTickers() {
 
 // ── Fetch crypto prices from CoinGecko (batch) ─────────
 void fetchCryptoPrices() {
+  // Resolve CoinGecko ids once and cache alongside ticker index
+  const char* idCache[MAX_TICKERS] = {0};
   String ids = "";
   for (int i = 0; i < numTickers; i++) {
     if (!tickerItems[i].isCrypto) continue;
     const char* cgId = getCoinGeckoId(tickerItems[i].symbol);
     if (!cgId) continue;
+    idCache[i] = cgId;
     if (ids.length() > 0) ids += ",";
     ids += cgId;
   }
   if (ids.length() == 0) return;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
+  if (!cgInit) {
+    cgClient.setInsecure();
+    cgHttp.setReuse(true);
+    cgHttp.setTimeout(10000);
+    cgInit = true;
+  }
   String url = "https://api.coingecko.com/api/v3/simple/price?ids=" + ids +
                "&vs_currencies=usd&include_24hr_change=true";
-  http.setTimeout(10000);
-  http.begin(client, url);
-  http.addHeader("Accept", "application/json");
-  http.addHeader("User-Agent", "ESP32");
-  int code = http.GET();
+  cgHttp.begin(cgClient, url);
+  cgHttp.addHeader("Accept", "application/json");
+  cgHttp.addHeader("User-Agent", "ESP32");
+  int code = cgHttp.GET();
   Serial.printf("[Ticker] CoinGecko HTTP %d\n", code);
   if (code == 200) {
-    String payload = http.getString();
+    String payload = cgHttp.getString();
     JsonDocument doc;
     deserializeJson(doc, payload);
     for (int i = 0; i < numTickers; i++) {
-      if (!tickerItems[i].isCrypto) continue;
-      const char* cgId = getCoinGeckoId(tickerItems[i].symbol);
+      const char* cgId = idCache[i];
       if (!cgId) continue;
       float p = doc[cgId]["usd"] | 0.0f;
       float c = doc[cgId]["usd_24h_change"] | 0.0f;
@@ -89,14 +109,21 @@ void fetchCryptoPrices() {
     }
     doc.clear();
   } else {
-    Serial.printf("[Ticker] CoinGecko error: %s\n", http.getString().c_str());
+    Serial.printf("[Ticker] CoinGecko error: %s\n", cgHttp.getString().c_str());
   }
-  http.end();
+  cgHttp.end();
 }
 
 // ── Fetch stock/commodity prices from Finnhub ───────────
 void fetchStockPrices() {
   if (stockApiKey.length() == 0) return;
+
+  if (!fhInit) {
+    fhClient.setInsecure();
+    fhHttp.setReuse(true);
+    fhHttp.setTimeout(10000);
+    fhInit = true;
+  }
 
   for (int i = 0; i < numTickers; i++) {
     if (tickerItems[i].isCrypto) continue;
@@ -111,19 +138,15 @@ void fetchStockPrices() {
       symbol = tickerItems[i].symbol;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    http.setTimeout(10000);
     String url = "https://finnhub.io/api/v1/quote?symbol=";
     url += symbol;
     url += "&token=";
     url += stockApiKey;
-    http.begin(client, url);
-    int code = http.GET();
+    fhHttp.begin(fhClient, url);
+    int code = fhHttp.GET();
     Serial.printf("[Ticker] Finnhub %s HTTP %d\n", tickerItems[i].symbol, code);
     if (code == 200) {
-      String payload = http.getString();
+      String payload = fhHttp.getString();
       JsonDocument doc;
       deserializeJson(doc, payload);
       float price = doc["c"] | 0.0f;
@@ -136,7 +159,7 @@ void fetchStockPrices() {
       }
       doc.clear();
     }
-    http.end();
+    fhHttp.end();
   }
 }
 
@@ -147,12 +170,7 @@ void recalcTickerWidth() {
   for (int i = 0; i < numTickers; i++) {
     if (!tickerItems[i].valid) continue;
     char buf[32];
-    if (tickerItems[i].price >= 1000)
-      snprintf(buf, sizeof(buf), "%s $%.0f ", tickerItems[i].symbol, tickerItems[i].price);
-    else if (tickerItems[i].price >= 1)
-      snprintf(buf, sizeof(buf), "%s $%.2f ", tickerItems[i].symbol, tickerItems[i].price);
-    else
-      snprintf(buf, sizeof(buf), "%s $%.4f ", tickerItems[i].symbol, tickerItems[i].price);
+    formatPrice(buf, sizeof(buf), tickerItems[i].symbol, tickerItems[i].price);
     tickerTextW += tft.textWidth(buf);
     char chg[16];
     snprintf(chg, sizeof(chg), "%s%.1f%%", tickerItems[i].change >= 0 ? "+" : "", tickerItems[i].change);
@@ -168,19 +186,14 @@ int drawTickerItemsAt(int startX) {
   for (int i = 0; i < numTickers; i++) {
     if (!tickerItems[i].valid) continue;
     char buf[32];
-    if (tickerItems[i].price >= 1000)
-      snprintf(buf, sizeof(buf), "%s $%.0f ", tickerItems[i].symbol, tickerItems[i].price);
-    else if (tickerItems[i].price >= 1)
-      snprintf(buf, sizeof(buf), "%s $%.2f ", tickerItems[i].symbol, tickerItems[i].price);
-    else
-      snprintf(buf, sizeof(buf), "%s $%.4f ", tickerItems[i].symbol, tickerItems[i].price);
-    tickerSpr.setTextColor(0xC618, TFT_BLACK);
+    formatPrice(buf, sizeof(buf), tickerItems[i].symbol, tickerItems[i].price);
+    tickerSpr.setTextColor(COLOR_TICKER_SYM, TFT_BLACK);
     tickerSpr.setCursor(x, 0);
     tickerSpr.print(buf);
     x += tickerSpr.textWidth(buf);
     char chg[16];
     snprintf(chg, sizeof(chg), "%s%.1f%%", tickerItems[i].change >= 0 ? "+" : "", tickerItems[i].change);
-    tickerSpr.setTextColor(tickerItems[i].change >= 0 ? 0x07E0 : 0xF800, TFT_BLACK);
+    tickerSpr.setTextColor(tickerItems[i].change >= 0 ? COLOR_GAIN : COLOR_LOSS, TFT_BLACK);
     tickerSpr.setCursor(x, 0);
     tickerSpr.print(chg);
     x += tickerSpr.textWidth(chg) + TICKER_GAP;

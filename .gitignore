@@ -2,3 +2,9 @@
 .vscode/
 include/certs.h
 get_token.py
+*.pem
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+CLAUDE.md

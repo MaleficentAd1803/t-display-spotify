@@ -77,11 +77,21 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define TICKER_Y         148
 #define TICKER_H         16
 #define TICKER_GAP       30
+#define DEFAULT_TICKERS  "NVDA,LMT,PLTR,BTC,XMR,ETH"
 
 // ── Timing ───────────────────────────────────────────────
-#define POLL_MS     1000
-#define BAR_MS      500
-#define WIFI_MS     30000
+#define POLL_MS      1000
+#define POLL_IDLE_MS 5000
+#define BAR_MS       500
+#define WIFI_MS      30000
+
+// ── Colors (RGB565) ──────────────────────────────────────
+#define COLOR_DIM_GREY   0x7BEF
+#define COLOR_DARK_GREY  0x4208
+#define COLOR_VERY_DARK  0x3186
+#define COLOR_TICKER_SYM 0xC618
+#define COLOR_GAIN       0x07E0
+#define COLOR_LOSS       0xF800
 
 // ── Redraw flags (set by core 0, consumed by core 1) ────
 #define RFLAG_TRACK_CHANGED  (1 << 0)
@@ -200,3 +210,6 @@ String runOAuthFlow();
 void startConfigServer();
 void ensureWiFi();
 void checkSerialInput();
+
+// main.cpp (shared helpers)
+String buildSpotifyBasicAuth();  // returns "Basic <base64(CLIENT_ID:SECRET)>"

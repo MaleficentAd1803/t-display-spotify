@@ -16,7 +16,6 @@ bool onJpgBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bmp) {
 static WiFiClientSecure artClient;
 static HTTPClient       artHttp;
 static bool             artClientInit = false;
-static String           artLastHost;
 
 // ── Download & draw album art JPEG ──────────────────────
 void showAlbumArt(const String& url) {
@@ -76,8 +75,11 @@ void showAlbumArt(const String& url) {
 // ── Truncate string to fit pixel width ──────────────────
 String fitText(const String& s, int maxPx) {
   if (tft.textWidth(s) <= maxPx) return s;
+  int dotsW = tft.textWidth("..");
+  int budget = maxPx - dotsW;
+  if (budget <= 0) return "..";
   String t = s;
-  while (t.length() > 1 && tft.textWidth(t + "..") > maxPx) {
+  while (t.length() > 1 && tft.textWidth(t) > budget) {
     t.remove(t.length() - 1);
   }
   return t + "..";
@@ -119,7 +121,7 @@ void drawClock() {
 
   tft.fillRect(CLOCK_X, CLOCK_Y, TXT_W, 16, TFT_BLACK);
   tft.setTextFont(2);
-  tft.setTextColor(0x7BEF, TFT_BLACK);
+  tft.setTextColor(COLOR_DIM_GREY, TFT_BLACK);
   tft.setCursor(CLOCK_X, CLOCK_Y);
   tft.print(timeStr);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -161,7 +163,7 @@ void drawIdleClock() {
   int clearW = tft.textWidth("00:00:00") + 12;
   int cy = (SCR_H - th) / 2;
   tft.fillRect((SCR_W - clearW) / 2, cy - 2, clearW, th + 4, TFT_BLACK);
-  tft.setTextColor(0x4208, TFT_BLACK);
+  tft.setTextColor(COLOR_DARK_GREY, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.drawString(timeStr, SCR_W / 2, SCR_H / 2);
   tft.setTextDatum(TL_DATUM);
@@ -177,7 +179,7 @@ void drawInfo() {
     drawIdleClock();
     // Show config URL
     tft.setTextFont(1);
-    tft.setTextColor(0x3186, TFT_BLACK);
+    tft.setTextColor(COLOR_VERY_DARK, TFT_BLACK);
     tft.setCursor(4, 4);
     tft.print("http://" + WiFi.localIP().toString());
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -206,7 +208,7 @@ void drawInfo() {
 
   if (now.device.length() > 0) {
     tft.setFreeFont(&FreeSans5pt8b);
-    tft.setTextColor(0x7BEF, TFT_BLACK);
+    tft.setTextColor(COLOR_DIM_GREY, TFT_BLACK);
     tft.setCursor(TXT_X, DEVICE_Y + 7);
     tft.print(fitText(now.device, TXT_W));
     tft.setTextColor(TFT_WHITE, TFT_BLACK);

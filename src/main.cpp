@@ -89,7 +89,11 @@ static void setBrightness(uint8_t val, const char* src = "") {
     digitalWrite(BL_PIN, LOW);
     delay(3);
     blLevel = 0;
+#ifdef VERBOSE_BL
     Serial.printf("[BL] %s level=0 (off)\n", src);
+#else
+    (void)src;
+#endif
     return;
   }
   if (blLevel == 0) {
@@ -105,7 +109,11 @@ static void setBrightness(uint8_t val, const char* src = "") {
     digitalWrite(BL_PIN, HIGH);
   }
   blLevel = val;
+#ifdef VERBOSE_BL
   Serial.printf("[BL] %s level=%d (pulses=%d)\n", src, val, pulses);
+#else
+  (void)src; (void)pulses;
+#endif
 }
 
 // Title scroll
@@ -161,6 +169,17 @@ static const char*      etagHeader = "ETag";
 static JsonDocument     pollFilter;
 static bool             pollFilterInit = false;
 
+// ── Build "Basic <base64(client_id:client_secret)>" auth header value
+String buildSpotifyBasicAuth() {
+  String creds = String(SPOTIFY_CLIENT_ID) + ":" + String(SPOTIFY_CLIENT_SECRET);
+  char b64[256];
+  size_t outLen = 0;
+  mbedtls_base64_encode((unsigned char*)b64, sizeof(b64), &outLen,
+                        (const unsigned char*)creds.c_str(), creds.length());
+  b64[outLen] = 0;
+  return String("Basic ") + b64;
+}
+
 // ── Refresh the Spotify access token ────────────────────
 static bool refreshAccessToken() {
   Serial.println("[Token] Refreshing access token...");
@@ -169,14 +188,7 @@ static bool refreshAccessToken() {
   HTTPClient http;
   http.begin(tokenClient, "https://accounts.spotify.com/api/token");
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-
-  String creds = String(SPOTIFY_CLIENT_ID) + ":" + String(SPOTIFY_CLIENT_SECRET);
-  char b64[256];
-  size_t outLen = 0;
-  mbedtls_base64_encode((unsigned char*)b64, sizeof(b64), &outLen,
-                        (const unsigned char*)creds.c_str(), creds.length());
-  b64[outLen] = 0;
-  http.addHeader("Authorization", String("Basic ") + b64);
+  http.addHeader("Authorization", buildSpotifyBasicAuth());
 
   String rtoken = prefs.getString("rtoken", "");
   String body = "grant_type=refresh_token&refresh_token=" + rtoken;
@@ -238,7 +250,9 @@ static void pollSpotifyData() {
     return;
   }
 
+#ifdef VERBOSE_POLL
   Serial.printf("[Poll] Heap: %u\n", ESP.getFreeHeap());
+#endif
 
   pollHttp.begin(pollClient, "https://api.spotify.com/v1/me/player");
   pollHttp.addHeader("Authorization", "Bearer " + accessToken);
@@ -412,7 +426,7 @@ static void backgroundTask(void* param) {
     isActive = now.active;
     xSemaphoreGive(dataMutex);
 
-    unsigned long pollInterval = isActive ? POLL_MS : 5000;
+    unsigned long pollInterval = isActive ? POLL_MS : POLL_IDLE_MS;
     if (screenOn && ms - bgLastPoll >= pollInterval) {
       bgLastPoll = ms;
       pollSpotifyData();
