@@ -186,6 +186,7 @@ extern volatile bool           settingsChanged;
 // display.cpp
 bool onJpgBlock(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bmp);
 void showAlbumArt(const String& url);
+void stopAlbumArtClient();
 String fitText(const String& s, int maxPx);
 void drawIcon(bool playing);
 void drawBar(int progress, int duration);

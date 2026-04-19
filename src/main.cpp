@@ -32,6 +32,7 @@
 #include <time.h>
 #include <esp_task_wdt.h>
 #include <mbedtls/base64.h>
+#include <driver/temp_sensor.h>
 
 // ── Credentials ─────────────────────────────────────────
 const char* SPOTIFY_CLIENT_ID     = "YOUR_CLIENT_ID";
@@ -183,6 +184,15 @@ String buildSpotifyBasicAuth() {
 // ── Refresh the Spotify access token ────────────────────
 static bool refreshAccessToken() {
   Serial.println("[Token] Refreshing access token...");
+  // Free mbedtls memory held by our keep-alive TLS sockets — the token
+  // handshake needs ~30KB and the ESP32 can't allocate it while we hold
+  // poll + art contexts (each ~30KB) alongside the library's own client.
+  stopAlbumArtClient();
+  pollHttp.end();
+  pollClient.stop();
+  pollClientInit = false;
+  lastETag = "";
+
   WiFiClientSecure tokenClient;
   tokenClient.setInsecure();
   HTTPClient http;
@@ -555,6 +565,11 @@ void setup() {
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(onJpgBlock);
 
+  // ── On-die temperature sensor ──────────────────────────
+  temp_sensor_config_t tempCfg = TSENS_CONFIG_DEFAULT();
+  temp_sensor_set_config(tempCfg);
+  temp_sensor_start();
+
   // ── WiFi ───────────────────────────────────────────────
   WiFi.mode(WIFI_STA);
   wm.setDebugOutput(true);
@@ -838,7 +853,10 @@ void loop() {
     unsigned long elapsed = (ms - cpuLastReport) * 1000UL;  // to microseconds
     float c1 = elapsed > 0 ? 100.0f * core1BusyUs / elapsed : 0;
     float c0 = elapsed > 0 ? 100.0f * core0BusyUs / elapsed : 0;
-    Serial.printf("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u\n", c0, c1, ESP.getFreeHeap());
+    float tempC = 0;
+    temp_sensor_read_celsius(&tempC);
+    Serial.printf("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u  Temp: %.1fC\n",
+                  c0, c1, ESP.getFreeHeap(), tempC);
     core0BusyUs = 0;
     core1BusyUs = 0;
     cpuLastReport = ms;

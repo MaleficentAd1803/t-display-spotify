@@ -17,6 +17,14 @@ static WiFiClientSecure artClient;
 static HTTPClient       artHttp;
 static bool             artClientInit = false;
 
+// Tear down the keep-alive TLS socket. Callers use this to free mbedtls
+// memory (~30KB) before opening a new TLS connection elsewhere.
+void stopAlbumArtClient() {
+  if (!artClientInit) return;
+  artHttp.end();
+  artClient.stop();
+}
+
 // ── Download & draw album art JPEG ──────────────────────
 void showAlbumArt(const String& url) {
   if (url.isEmpty()) return;
