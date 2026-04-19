@@ -21,11 +21,6 @@ static bool             artClientInit = false;
 void showAlbumArt(const String& url) {
   if (url.isEmpty()) return;
 
-  if (ESP.getFreeHeap() < 80000) {
-    Serial.printf("[Art] Skipping — low heap: %u\n", ESP.getFreeHeap());
-    return;
-  }
-
   if (!artClientInit) {
     artClient.setInsecure();
     artHttp.setReuse(true);  // Keep TCP+TLS connection alive
@@ -37,6 +32,15 @@ void showAlbumArt(const String& url) {
   unsigned long t0 = millis();
   artHttp.begin(artClient, url);
   int code = artHttp.GET();
+  // A kept-alive TLS socket can be closed by the CDN during long idle periods.
+  // Retry once on a fresh connection before giving up.
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[Art] HTTP %d — retrying fresh (%lums)\n", code, millis() - t0);
+    artHttp.end();
+    artClient.stop();
+    artHttp.begin(artClient, url);
+    code = artHttp.GET();
+  }
   if (code != HTTP_CODE_OK) {
     Serial.printf("[Art] HTTP %d (%lums)\n", code, millis() - t0);
     artHttp.end();
@@ -46,8 +50,16 @@ void showAlbumArt(const String& url) {
   int len = artHttp.getSize();
   if (len <= 0 || len > 80000) { artHttp.end(); return; }
 
+  // Need the JPEG buffer plus headroom for TJpgDec + stack/TLS work buffers.
+  unsigned heap = ESP.getFreeHeap();
+  if ((unsigned)len + 16000 > heap) {
+    Serial.printf("[Art] Skipping — need %d+16000, heap %u\n", len, heap);
+    artHttp.end();
+    return;
+  }
+
   uint8_t* buf = (uint8_t*)malloc(len);
-  if (!buf) { Serial.println("[Art] malloc failed"); artHttp.end(); return; }
+  if (!buf) { Serial.printf("[Art] malloc(%d) failed, heap=%u\n", len, heap); artHttp.end(); return; }
 
   WiFiClient* stream = artHttp.getStreamPtr();
   size_t got = 0;
