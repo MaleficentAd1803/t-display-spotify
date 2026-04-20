@@ -56,18 +56,28 @@ void showAlbumArt(const String& url) {
   }
 
   int len = artHttp.getSize();
-  if (len <= 0 || len > 80000) { artHttp.end(); return; }
+  if (len <= 0 || len > 300000) { artHttp.end(); return; }
 
-  // Need the JPEG buffer plus headroom for TJpgDec + stack/TLS work buffers.
-  unsigned heap = ESP.getFreeHeap();
-  if ((unsigned)len + 16000 > heap) {
-    Serial.printf("[Art] Skipping — need %d+16000, heap %u\n", len, heap);
-    artHttp.end();
-    return;
+  // Prefer PSRAM (8MB on T-Display S3) so we don't fight the ~300KB internal
+  // heap — leaves room for TJpgDec work buffers and TLS. Falls back to
+  // internal heap if PSRAM is absent or exhausted.
+  uint8_t* buf = (uint8_t*)ps_malloc(len);
+  if (!buf) {
+    unsigned heap = ESP.getFreeHeap();
+    if ((unsigned)len + 16000 > heap) {
+      Serial.printf("[Art] Skipping — need %d+16000, heap %u, psram %u\n",
+                    len, heap, (unsigned)ESP.getFreePsram());
+      artHttp.end();
+      return;
+    }
+    buf = (uint8_t*)malloc(len);
+    if (!buf) {
+      Serial.printf("[Art] alloc(%d) failed, heap=%u psram=%u\n",
+                    len, heap, (unsigned)ESP.getFreePsram());
+      artHttp.end();
+      return;
+    }
   }
-
-  uint8_t* buf = (uint8_t*)malloc(len);
-  if (!buf) { Serial.printf("[Art] malloc(%d) failed, heap=%u\n", len, heap); artHttp.end(); return; }
 
   WiFiClient* stream = artHttp.getStreamPtr();
   size_t got = 0;
@@ -103,6 +113,32 @@ String fitText(const String& s, int maxPx) {
     t.remove(t.length() - 1);
   }
   return t + "..";
+}
+
+// ── 12×12 CPU chip icon (body outline, center die, 3 pins per side) ──
+void drawCpuIcon(int x, int y, uint16_t color) {
+  tft.drawRect(x + 1, y + 1, 10, 10, color);
+  tft.drawRect(x + 4, y + 4, 4, 4, color);
+  for (int i = 0; i < 3; i++) {
+    int off = 2 + i * 3;
+    tft.drawPixel(x + off, y,      color);
+    tft.drawPixel(x + off, y + 11, color);
+    tft.drawPixel(x,       y + off, color);
+    tft.drawPixel(x + 11,  y + off, color);
+  }
+}
+
+// ── CPU icon + temperature (e.g. "45.3C") ───────────────
+void drawCpuTemp(int x, int y, float tempC, uint16_t color) {
+  tft.fillRect(x, y, CPU_TEMP_W, CPU_ICON_SZ, TFT_BLACK);
+  drawCpuIcon(x, y, color);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%.1fC", tempC);
+  tft.setFreeFont(&FreeSans5pt8b);
+  tft.setTextColor(color, TFT_BLACK);
+  tft.setCursor(x + CPU_ICON_SZ + 3, y + 9);
+  tft.print(buf);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
 }
 
 // ── Play / pause icon ───────────────────────────────────
@@ -203,6 +239,7 @@ void drawInfo() {
     tft.setCursor(4, 4);
     tft.print("http://" + WiFi.localIP().toString());
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    drawCpuTemp(CPU_TEMP_IDLE_X, CPU_TEMP_IDLE_Y, cpuTempC, COLOR_DIM_GREY);
     tickerScrollX = 0;
     return;
   }
@@ -236,6 +273,7 @@ void drawInfo() {
 
   drawIcon(now.playing);
   drawBar(now.progress, now.duration);
+  drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, TFT_WHITE);
 
   lastTimeStr = "";
   drawClock();

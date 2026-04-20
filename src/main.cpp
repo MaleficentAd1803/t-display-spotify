@@ -32,7 +32,6 @@
 #include <time.h>
 #include <esp_task_wdt.h>
 #include <mbedtls/base64.h>
-#include <driver/temp_sensor.h>
 
 // ── Credentials ─────────────────────────────────────────
 const char* SPOTIFY_CLIENT_ID     = "YOUR_CLIENT_ID";
@@ -78,6 +77,7 @@ uint8_t       brightCurrent  = 16;
 unsigned long brightSettingsAt = 0;
 static uint8_t blLevel       = 0;     // Backlight chip state: 0=off, 1-16
 Playback      now;
+float         cpuTempC       = 0;
 
 // T-Display S3 backlight uses a one-wire pulse protocol (NOT PWM).
 // The chip has 16 brightness levels. Each LOW→HIGH pulse decrements
@@ -534,8 +534,9 @@ static void onFlipScreen() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  Serial.printf("\n[Boot] Reset reason: %d | Free heap: %u | Min heap: %u\n",
-                esp_reset_reason(), ESP.getFreeHeap(), ESP.getMinFreeHeap());
+  Serial.printf("\n[Boot] Reset reason: %d | Free heap: %u | Min heap: %u | PSRAM: %u/%u\n",
+                esp_reset_reason(), ESP.getFreeHeap(), ESP.getMinFreeHeap(),
+                (unsigned)ESP.getFreePsram(), (unsigned)ESP.getPsramSize());
 
   pinMode(PWR_EN, OUTPUT);
   digitalWrite(PWR_EN, HIGH);
@@ -565,10 +566,7 @@ void setup() {
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(onJpgBlock);
 
-  // ── On-die temperature sensor ──────────────────────────
-  temp_sensor_config_t tempCfg = TSENS_CONFIG_DEFAULT();
-  temp_sensor_set_config(tempCfg);
-  temp_sensor_start();
+  cpuTempC = temperatureRead();
 
   // ── WiFi ───────────────────────────────────────────────
   WiFi.mode(WIFI_STA);
@@ -853,10 +851,16 @@ void loop() {
     unsigned long elapsed = (ms - cpuLastReport) * 1000UL;  // to microseconds
     float c1 = elapsed > 0 ? 100.0f * core1BusyUs / elapsed : 0;
     float c0 = elapsed > 0 ? 100.0f * core0BusyUs / elapsed : 0;
-    float tempC = 0;
-    temp_sensor_read_celsius(&tempC);
+    cpuTempC = temperatureRead();
     Serial.printf("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u  Temp: %.1fC\n",
-                  c0, c1, ESP.getFreeHeap(), tempC);
+                  c0, c1, ESP.getFreeHeap(), cpuTempC);
+    if (screenOn) {
+      if (now.active) {
+        drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, TFT_WHITE);
+      } else {
+        drawCpuTemp(CPU_TEMP_IDLE_X, CPU_TEMP_IDLE_Y, cpuTempC, COLOR_DIM_GREY);
+      }
+    }
     core0BusyUs = 0;
     core1BusyUs = 0;
     cpuLastReport = ms;

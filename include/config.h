@@ -64,6 +64,15 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define CLOCK_Y     95
 #define CLOCK_MS    1000
 
+// CPU temperature readout (icon + text)
+#define CPU_ICON_SZ    12
+#define CPU_TEMP_W     60       // icon + gap + "XX.XC" text clear area
+#define CPU_TEMP_PLAY_X TXT_X   // right panel, in-line with bottom of cover art
+#define CPU_TEMP_PLAY_Y 146     // icon top → bottom at 157 (art bottom = 157)
+#define CPU_TEMP_IDLE_X (SCR_W - CPU_TEMP_W + 12)
+#define CPU_TEMP_IDLE_Y 2
+#define CPU_TEMP_UPDATE_MS 5000
+
 // ── Scroll ───────────────────────────────────────────────
 #define SCROLL_MS       30
 #define SCROLL_PAUSE_MS 2000
@@ -153,6 +162,7 @@ extern uint8_t       brightPlay;
 extern uint8_t       brightIdle;
 extern Playback      now;
 extern SemaphoreHandle_t dataMutex;
+extern float         cpuTempC;
 
 // Title scroll
 extern TFT_eSprite   titleSpr;
@@ -194,6 +204,8 @@ void drawClock();
 void drawIdleClock();
 void drawTitle();
 void drawInfo();
+void drawCpuIcon(int x, int y, uint16_t color);
+void drawCpuTemp(int x, int y, float tempC, uint16_t color);
 void showStatus(const char* line1, const char* line2 = nullptr);
 
 // ticker.cpp
