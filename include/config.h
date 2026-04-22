@@ -121,6 +121,10 @@ enum Page { PAGE_NOWPLAYING, PAGE_LYRICS };
 // ── Lyrics ──────────────────────────────────────────────
 #define MAX_LYRIC_LINES 160
 #define LYRIC_TEXT_LEN  96
+// Highlight lines this many ms *before* their LRC timestamp, since
+// most LRC files mark the exact word onset — showing 0.5 s early lets
+// the eye land on the line right as it starts being sung.
+#define LYRIC_LEAD_MS   500
 struct LyricLine {
   int  timeMs;
   char text[LYRIC_TEXT_LEN];

@@ -325,7 +325,7 @@ static WrapResult wrapTwoLines(const String& s, int maxPx, String& a, String& b)
 
 static int findLyricIdx() {
   if (numLyrics == 0) return -1;
-  int curMs = now.progress;
+  int curMs = now.progress + LYRIC_LEAD_MS;
   if (now.playing) curMs += (int)(millis() - now.pollTime);
   int idx = 0;
   for (int i = 0; i < numLyrics; i++) {

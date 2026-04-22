@@ -92,9 +92,10 @@ void fetchCryptoPrices() {
   int code = cgHttp.GET();
   Serial.printf("[Ticker] CoinGecko HTTP %d\n", code);
   if (code == 200) {
-    String payload = cgHttp.getString();
+    // Stream-parse straight from the TLS socket — skips a ~2-20 KB String
+    // allocation on internal heap that otherwise fragments during long idle.
     JsonDocument doc;
-    deserializeJson(doc, payload);
+    deserializeJson(doc, cgHttp.getStream());
     for (int i = 0; i < numTickers; i++) {
       const char* cgId = idCache[i];
       if (!cgId) continue;
@@ -146,9 +147,8 @@ void fetchStockPrices() {
     int code = fhHttp.GET();
     Serial.printf("[Ticker] Finnhub %s HTTP %d\n", tickerItems[i].symbol, code);
     if (code == 200) {
-      String payload = fhHttp.getString();
       JsonDocument doc;
-      deserializeJson(doc, payload);
+      deserializeJson(doc, fhHttp.getStream());
       float price = doc["c"] | 0.0f;
       float pct   = doc["dp"] | 0.0f;
       if (price > 0) {
