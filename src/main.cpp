@@ -13,10 +13,11 @@
 //   Hold BOT button at boot → reset WiFi + Spotify token
 //
 //  CONTROLS:
-//   TOP single-click  → Next track
-//   TOP double-click  → Previous track
+//   TOP single-click  → Play / Pause
+//   TOP double-click  → Next track
+//   TOP triple-click  → Previous track
 //   TOP long-press    → Flip screen orientation
-//   BOT single-click  → Play / Pause
+//   BOT single-click  → Switch page (Now Playing ↔ Lyrics)
 //   BOT double-click  → Screen on / off
 //
 //  CONFIG:
@@ -34,8 +35,8 @@
 #include <mbedtls/base64.h>
 
 // ── Credentials ─────────────────────────────────────────
-const char* SPOTIFY_CLIENT_ID     = "YOUR_CLIENT_ID";
-const char* SPOTIFY_CLIENT_SECRET = "YOUR_CLIENT_SECRET";
+const char* SPOTIFY_CLIENT_ID     = "ca1f92d52a1945c684308ec209cb2d89";
+const char* SPOTIFY_CLIENT_SECRET = "dc1c281c25634d3d9ed2218cbbc613e2";
 
 // ── CoinGecko crypto ID mapping ─────────────────────────
 const CryptoMap CRYPTO_MAP[] = {
@@ -145,6 +146,10 @@ volatile uint32_t      redrawFlags    = 0;
 volatile PendingAction pendingAction  = ACTION_NONE;
 volatile bool          tickerListChanged = false;
 volatile bool          settingsChanged   = false;
+volatile Page          currentPage       = PAGE_NOWPLAYING;
+volatile bool          lyricsFetchNeeded = false;
+static unsigned long   lastLyricDraw     = 0;
+#define LYRIC_DRAW_MS 250
 
 // CPU usage tracking (per-core busy time measurement)
 static unsigned long cpuLastReport     = 0;
@@ -348,6 +353,12 @@ static void pollSpotifyData() {
       Serial.printf("[Poll] New track: %s | %s (%lums)\n", trk.c_str(), art.c_str(), rtt);
       if (wasInactive) redrawFlags |= RFLAG_GONE_ACTIVE;
       redrawFlags |= RFLAG_TRACK_CHANGED;
+      // Invalidate previous track's lyrics immediately so the lyrics page
+      // shows "Loading..." instead of mis-syncing the old lines.
+      numLyrics = 0;
+      lyricsTrackId = "";
+      lyricsTriedCurrent = false;
+      lyricsFetchNeeded = true;
 
     } else {
       // ── Same track — lightweight update (progress + play state) ──
@@ -416,6 +427,7 @@ static void backgroundTask(void* param) {
     if (action != ACTION_NONE) {
       pendingAction = ACTION_NONE;
       if (sp && spotifyReady) {
+        unsigned long tAct = millis();
         switch (action) {
           case ACTION_SKIP:  sp->skip();                    break;
           case ACTION_PREV:  sp->previous();                break;
@@ -423,9 +435,12 @@ static void backgroundTask(void* param) {
           case ACTION_PAUSE: sp->pause_playback();          break;
           default: break;
         }
+        Serial.printf("[BG] Spotify action %d: %lums\n", action, millis() - tAct);
         // Poll immediately after action to get new state
         delay(400);
+        unsigned long tPoll = millis();
         pollSpotifyData();
+        Serial.printf("[BG] Post-action poll: %lums\n", millis() - tPoll);
         bgLastPoll = millis();
       }
     }
@@ -444,6 +459,14 @@ static void backgroundTask(void* param) {
       xSemaphoreTake(dataMutex, portMAX_DELAY);
       isActive = now.active;
       xSemaphoreGive(dataMutex);
+    }
+
+    // Lyrics fetch (on track change)
+    if (lyricsFetchNeeded && isActive) {
+      lyricsFetchNeeded = false;
+      unsigned long tLyr = millis();
+      fetchLyrics();
+      Serial.printf("[BG] Lyrics fetch total: %lums\n", millis() - tLyr);
     }
 
     // Ticker price fetching
@@ -494,8 +517,18 @@ static void onPlayPause() {
 
   if (!active) return;
   Serial.printf("[Button] %s\n", isPlaying ? "Play" : "Pause");
-  drawIcon(isPlaying);
+  // Only update icon when the Now Playing page is visible
+  if (currentPage == PAGE_NOWPLAYING) drawIcon(isPlaying);
   pendingAction = isPlaying ? ACTION_PLAY : ACTION_PAUSE;
+}
+
+static void onTopMulti();   // fwd
+
+static void onPageToggle() {
+  currentPage = (currentPage == PAGE_NOWPLAYING) ? PAGE_LYRICS : PAGE_NOWPLAYING;
+  Serial.printf("[Button] Page -> %s\n",
+                currentPage == PAGE_LYRICS ? "LYRICS" : "NOW-PLAYING");
+  redrawFlags |= RFLAG_PAGE_CHANGED;
 }
 
 static void onScreenToggle() {
@@ -525,8 +558,17 @@ static void onFlipScreen() {
   String imgUrl = now.imgUrl;
   xSemaphoreGive(dataMutex);
 
-  if (active) showAlbumArt(imgUrl);
-  drawInfo();
+  if (currentPage == PAGE_LYRICS && active) {
+    drawLyricsPage();
+  } else {
+    if (active) showAlbumArt(imgUrl);
+    drawInfo();
+  }
+}
+
+static void onTopMulti() {
+  // OneButton fires attachMultiClick for 3+ clicks. We only care about 3.
+  if (topBtn.getNumberClicks() >= 3) onPrev();
 }
 
 // ============================================================
@@ -655,7 +697,7 @@ void setup() {
   tickerSpr.createSprite(SCR_W + SCROLL_OVERFLOW, TICKER_H);
   tickerSpr.setSwapBytes(true);
   loadTickers();
-  stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
+  stockApiKey = prefs.getString("stockkey", "d6m0k71r01qu3p05ktsgd6m0k71r01qu3p05ktt0");
   brightPlay = prefs.getUChar("br_play", 16);
   brightIdle = prefs.getUChar("br_idle", 8);
   // Migrate old 0-255 range values to 0-16 range
@@ -670,10 +712,13 @@ void setup() {
   }
 
   // ── Buttons ────────────────────────────────────────────
-  topBtn.attachClick(onSkip);
-  topBtn.attachDoubleClick(onPrev);
+  // Top: 1-click=play/pause, 2-click=skip, 3-click=prev, long=flip
+  topBtn.attachClick(onPlayPause);
+  topBtn.attachDoubleClick(onSkip);
+  topBtn.attachMultiClick(onTopMulti);
   topBtn.attachLongPressStart(onFlipScreen);
-  botBtn.attachClick(onPlayPause);
+  // Bottom: 1-click=page toggle, 2-click=screen on/off
+  botBtn.attachClick(onPageToggle);
   botBtn.attachDoubleClick(onScreenToggle);
 
   // ── Config web server ──────────────────────────────────
@@ -724,7 +769,7 @@ void loop() {
       if (ms - brightSettingsAt > 3000) setBrightness(brightIdle, "idle");
       tft.fillScreen(TFT_BLACK);
       xSemaphoreTake(dataMutex, portMAX_DELAY);
-      drawInfo();
+      drawInfo();  // idle view regardless of currentPage (lyrics needs active track)
       xSemaphoreGive(dataMutex);
     }
 
@@ -741,21 +786,56 @@ void loop() {
       tft.fillScreen(TFT_BLACK);
       if (ms - brightSettingsAt > 3000) setBrightness(brightPlay, "track");
 
-      // Draw text first for instant feedback, then load art (slow TLS + download)
       xSemaphoreTake(dataMutex, portMAX_DELAY);
-      drawInfo();
+      if (currentPage == PAGE_LYRICS) {
+        drawLyricsPage();  // shows "Loading lyrics..." until fetch completes
+      } else {
+        drawInfo();
+      }
       xSemaphoreGive(dataMutex);
 
-      showAlbumArt(imgUrl);
+      if (currentPage == PAGE_NOWPLAYING) showAlbumArt(imgUrl);
     } else if (flags & RFLAG_DEVICE_CHANGED) {
-      xSemaphoreTake(dataMutex, portMAX_DELAY);
-      drawInfo();
-      xSemaphoreGive(dataMutex);
+      if (currentPage == PAGE_NOWPLAYING) {
+        xSemaphoreTake(dataMutex, portMAX_DELAY);
+        drawInfo();
+        xSemaphoreGive(dataMutex);
+      }
     } else if (flags & RFLAG_PLAY_CHANGED) {
+      if (currentPage == PAGE_NOWPLAYING) {
+        xSemaphoreTake(dataMutex, portMAX_DELAY);
+        drawIcon(now.playing);
+        drawBar(now.progress, now.duration);
+        xSemaphoreGive(dataMutex);
+      }
+    }
+
+    if (flags & RFLAG_PAGE_CHANGED) {
+      String imgUrl;
       xSemaphoreTake(dataMutex, portMAX_DELAY);
-      drawIcon(now.playing);
-      drawBar(now.progress, now.duration);
+      bool active = now.active;
+      imgUrl = now.imgUrl;
       xSemaphoreGive(dataMutex);
+      tft.fillScreen(TFT_BLACK);
+      lastTimeStr = "";
+      if (currentPage == PAGE_LYRICS && active) {
+        xSemaphoreTake(dataMutex, portMAX_DELAY);
+        drawLyricsPage();
+        xSemaphoreGive(dataMutex);
+      } else {
+        xSemaphoreTake(dataMutex, portMAX_DELAY);
+        drawInfo();
+        xSemaphoreGive(dataMutex);
+        if (active) showAlbumArt(imgUrl);
+      }
+    }
+
+    if (flags & RFLAG_LYRICS_READY) {
+      if (currentPage == PAGE_LYRICS && now.active) {
+        xSemaphoreTake(dataMutex, portMAX_DELAY);
+        drawLyricsPage();
+        xSemaphoreGive(dataMutex);
+      }
     }
 
     if (flags & RFLAG_TICKER_READY) {
@@ -764,15 +844,25 @@ void loop() {
   }
 
   // ── Progress bar (interpolated) ───────────────────────
-  if (screenOn && now.active && now.playing && ms - lastBar >= BAR_MS) {
+  if (screenOn && currentPage == PAGE_NOWPLAYING &&
+      now.active && now.playing && ms - lastBar >= BAR_MS) {
     lastBar = ms;
     int elapsed = ms - now.pollTime;
     int cur = min(now.progress + (int)elapsed, now.duration);
     drawBar(cur, now.duration);
   }
 
+  // ── Lyrics page update (track current line) ───────────
+  if (screenOn && currentPage == PAGE_LYRICS && now.active &&
+      ms - lastLyricDraw >= LYRIC_DRAW_MS) {
+    lastLyricDraw = ms;
+    xSemaphoreTake(dataMutex, portMAX_DELAY);
+    drawLyricsUpdate();
+    xSemaphoreGive(dataMutex);
+  }
+
   // ── Title scrolling ───────────────────────────────────
-  if (screenOn && now.active && titlePixelW > TXT_W) {
+  if (screenOn && currentPage == PAGE_NOWPLAYING && now.active && titlePixelW > TXT_W) {
     if (scrollPaused) {
       if (ms >= scrollPauseAt) {
         scrollPaused = false;
@@ -793,7 +883,7 @@ void loop() {
   }
 
   // ── Clock ─────────────────────────────────────────────
-  if (screenOn && ms - lastClock >= CLOCK_MS) {
+  if (screenOn && currentPage == PAGE_NOWPLAYING && ms - lastClock >= CLOCK_MS) {
     lastClock = ms;
     if (now.active) {
       drawClock();
@@ -806,7 +896,7 @@ void loop() {
   if (tickerListChanged) {
     tickerListChanged = false;
     loadTickers();
-    stockApiKey = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
+    stockApiKey = prefs.getString("stockkey", "d6m0k71r01qu3p05ktsgd6m0k71r01qu3p05ktt0");
     tickerReady = false;
     tickerScrollX = 0;
     bgTickerFetchNeeded = true;
@@ -854,9 +944,9 @@ void loop() {
     cpuTempC = temperatureRead();
     Serial.printf("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u  Temp: %.1fC\n",
                   c0, c1, ESP.getFreeHeap(), cpuTempC);
-    if (screenOn) {
+    if (screenOn && currentPage == PAGE_NOWPLAYING) {
       if (now.active) {
-        drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, TFT_WHITE);
+        drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, COLOR_DIM_GREY);
       } else {
         drawCpuTemp(CPU_TEMP_IDLE_X, CPU_TEMP_IDLE_Y, cpuTempC, COLOR_DIM_GREY);
       }

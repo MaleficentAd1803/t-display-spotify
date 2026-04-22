@@ -273,10 +273,179 @@ void drawInfo() {
 
   drawIcon(now.playing);
   drawBar(now.progress, now.duration);
-  drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, TFT_WHITE);
+  drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, COLOR_DIM_GREY);
 
   lastTimeStr = "";
   drawClock();
+}
+
+// ── Lyrics page ─────────────────────────────────────────
+// Layout (320x170):
+//   Top 42px:  track title (bold) + artist (dim)
+//   y=43:      1px separator
+//   y=45..170: lyrics area (125px) — previous / current / next lines, centered
+#define LYR_HDR_H    42
+#define LYR_AREA_Y   45
+#define LYR_AREA_H   (SCR_H - LYR_AREA_Y)
+
+static int  lastLyricIdx = -2;   // -2 forces redraw on first call
+static bool lastHadLyrics = false;
+
+// Split s into two lines, each fitting maxPx in the CURRENT TFT font.
+// Returns:
+//   WRAP_NONE       — whole string fits on one line (b is empty).
+//   WRAP_OK         — split cleanly into two lines, both fit.
+//   WRAP_TRUNCATED  — second line had to be truncated with ".." to fit.
+// Prefers word boundaries; falls back to mid-word split.
+enum WrapResult { WRAP_NONE, WRAP_OK, WRAP_TRUNCATED };
+static WrapResult wrapTwoLines(const String& s, int maxPx, String& a, String& b) {
+  if (tft.textWidth(s) <= maxPx) { a = s; b = ""; return WRAP_NONE; }
+
+  int len = (int)s.length();
+  int best = -1;  // byte index of the space we'll break on
+  for (int i = 1; i < len; i++) {
+    if (s[i] != ' ') continue;
+    if (tft.textWidth(s.substring(0, i)) <= maxPx) best = i;
+    else break;  // prefix widths are monotonic — further splits are worse
+  }
+
+  if (best > 0) {
+    a = s.substring(0, best);
+    b = s.substring(best + 1);  // skip the space
+  } else {
+    // No usable word boundary — hard-split character-wise
+    int cut = len;
+    while (cut > 1 && tft.textWidth(s.substring(0, cut)) > maxPx) cut--;
+    a = s.substring(0, cut);
+    b = s.substring(cut);
+  }
+  if (tft.textWidth(b) > maxPx) { b = fitText(b, maxPx); return WRAP_TRUNCATED; }
+  return WRAP_OK;
+}
+
+static int findLyricIdx() {
+  if (numLyrics == 0) return -1;
+  int curMs = now.progress;
+  if (now.playing) curMs += (int)(millis() - now.pollTime);
+  int idx = 0;
+  for (int i = 0; i < numLyrics; i++) {
+    if (lyrics[i].timeMs <= curMs) idx = i;
+    else break;
+  }
+  // If we're before the first timestamp, show a blank lead-in (idx = -1 style)
+  if (lyrics[0].timeMs > curMs) return -1;
+  return idx;
+}
+
+static void drawLyricsHeader() {
+  tft.fillRect(0, 0, SCR_W, LYR_HDR_H + 1, TFT_BLACK);
+  tft.setFreeFont(&FreeSansBold9pt8b);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(6, 17);
+  tft.print(fitText(now.track, SCR_W - 12));
+  tft.setFreeFont(&FreeSans8pt8b);
+  tft.setTextColor(COLOR_DIM_GREY, TFT_BLACK);
+  tft.setCursor(6, 37);
+  tft.print(fitText(now.artist, SCR_W - 12));
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawFastHLine(0, LYR_HDR_H + 1, SCR_W, COLOR_DARK_GREY);
+}
+
+// Row bounding boxes (centered on each y). Clearing per-row instead of the
+// whole body cuts the black-flash area by ~6x, making line-changes much less
+// flashy than a full fillRect.
+#define LYR_ROW_HALF_THIN    12   // prev / next lines (8pt)
+#define LYR_ROW_HALF_THICK   26   // current line (may be 2 rows, covers descenders)
+#define LYR_WRAP_OFFSET      12   // vertical offset from yCur for each wrapped row
+
+static void drawLyricsBody() {
+  tft.setTextDatum(MC_DATUM);
+  int cx = SCR_W / 2;
+
+  if (numLyrics == 0) {
+    tft.fillRect(0, LYR_AREA_Y, SCR_W, LYR_AREA_H, TFT_BLACK);
+    tft.setFreeFont(&FreeSans8pt8b);
+    tft.setTextColor(COLOR_DIM_GREY, TFT_BLACK);
+    const char* msg = lyricsTriedCurrent ? "No lyrics available" : "Loading lyrics...";
+    tft.drawString(msg, cx, LYR_AREA_Y + LYR_AREA_H / 2);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    return;
+  }
+
+  int idx = findLyricIdx();
+
+  // y-positions inside the 125px area: prev=20, current=62, next=104
+  int yPrev = LYR_AREA_Y + 20;
+  int yCur  = LYR_AREA_Y + 62;
+  int yNext = LYR_AREA_Y + 104;
+
+  // previous line (dim) — clear just its row
+  tft.fillRect(0, yPrev - LYR_ROW_HALF_THIN, SCR_W, LYR_ROW_HALF_THIN * 2, TFT_BLACK);
+  if (idx > 0) {
+    tft.setFreeFont(&FreeSans8pt8b);
+    tft.setTextColor(COLOR_DIM_GREY, TFT_BLACK);
+    tft.drawString(fitText(String(lyrics[idx - 1].text), SCR_W - 8), cx, yPrev);
+  }
+  // current line (bold white) — wraps into up to two rows; if still too long,
+  // fall back to a smaller font before truncating. Clear only its row band.
+  tft.fillRect(0, yCur - LYR_ROW_HALF_THICK, SCR_W, LYR_ROW_HALF_THICK * 2, TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  const char* t = (idx < 0) ? "..." : lyrics[idx].text;
+  if (t[0] == 0) t = "...";
+  String a, b;
+  tft.setFreeFont(&FreeSansBold9pt8b);
+  WrapResult r = wrapTwoLines(String(t), SCR_W - 8, a, b);
+  if (r == WRAP_TRUNCATED) {
+    // Try again with the smaller 8pt font (fits ~25% more characters).
+    tft.setFreeFont(&FreeSans8pt8b);
+    r = wrapTwoLines(String(t), SCR_W - 8, a, b);
+  }
+  if (r == WRAP_NONE) {
+    tft.drawString(a, cx, yCur);
+  } else {
+    tft.drawString(a, cx, yCur - 10);
+    tft.drawString(b, cx, yCur + 10);
+  }
+  // next line (dim) — clear just its row
+  tft.fillRect(0, yNext - LYR_ROW_HALF_THIN, SCR_W, LYR_ROW_HALF_THIN * 2, TFT_BLACK);
+  int nextI = (idx < 0) ? 0 : idx + 1;
+  if (nextI < numLyrics) {
+    tft.setFreeFont(&FreeSans8pt8b);
+    tft.setTextColor(COLOR_DIM_GREY, TFT_BLACK);
+    tft.drawString(fitText(String(lyrics[nextI].text), SCR_W - 8), cx, yNext);
+  }
+
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+}
+
+void drawLyricsPage() {
+  tft.fillScreen(TFT_BLACK);
+  drawLyricsHeader();
+  drawLyricsBody();
+  lastLyricIdx  = findLyricIdx();
+  lastHadLyrics = (numLyrics > 0);
+}
+
+// Called frequently from loop — only redraws body if the active line changed.
+void drawLyricsUpdate() {
+  bool hasLyrics = (numLyrics > 0);
+  int  idx = findLyricIdx();
+  if (hasLyrics == lastHadLyrics && idx == lastLyricIdx) return;
+  lastHadLyrics = hasLyrics;
+  lastLyricIdx  = idx;
+  drawLyricsBody();
+}
+
+// Dispatch based on currentPage and playback state. Lyrics page falls back to
+// the now-playing/idle view when nothing is playing.
+void drawPage() {
+  if (currentPage == PAGE_LYRICS && now.active) {
+    drawLyricsPage();
+  } else {
+    drawInfo();
+  }
 }
 
 // ── Centered status message ─────────────────────────────

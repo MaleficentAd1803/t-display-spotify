@@ -109,9 +109,22 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define RFLAG_GONE_IDLE      (1 << 3)
 #define RFLAG_GONE_ACTIVE    (1 << 4)
 #define RFLAG_TICKER_READY   (1 << 5)
+#define RFLAG_LYRICS_READY   (1 << 6)
+#define RFLAG_PAGE_CHANGED   (1 << 7)
 
 // ── Button actions (set by core 1, consumed by core 0) ──
 enum PendingAction { ACTION_NONE, ACTION_SKIP, ACTION_PREV, ACTION_PLAY, ACTION_PAUSE };
+
+// ── Pages ───────────────────────────────────────────────
+enum Page { PAGE_NOWPLAYING, PAGE_LYRICS };
+
+// ── Lyrics ──────────────────────────────────────────────
+#define MAX_LYRIC_LINES 160
+#define LYRIC_TEXT_LEN  96
+struct LyricLine {
+  int  timeMs;
+  char text[LYRIC_TEXT_LEN];
+};
 
 // ── CoinGecko crypto mapping ────────────────────────────
 struct CryptoMap { const char* sym; const char* id; };
@@ -191,6 +204,14 @@ extern volatile uint32_t      redrawFlags;
 extern volatile PendingAction  pendingAction;
 extern volatile bool           tickerListChanged;
 extern volatile bool           settingsChanged;
+extern volatile Page           currentPage;
+extern volatile bool           lyricsFetchNeeded;
+
+// Lyrics (owned by core 0 fetch, read by core 1 render; protected by dataMutex)
+extern LyricLine               lyrics[MAX_LYRIC_LINES];
+extern int                     numLyrics;
+extern String                  lyricsTrackId;
+extern bool                    lyricsTriedCurrent;  // true once fetch attempted for trackId
 
 // ── Function declarations ───────────────────────────────
 // display.cpp
@@ -207,6 +228,12 @@ void drawInfo();
 void drawCpuIcon(int x, int y, uint16_t color);
 void drawCpuTemp(int x, int y, float tempC, uint16_t color);
 void showStatus(const char* line1, const char* line2 = nullptr);
+void drawLyricsPage();
+void drawLyricsUpdate();
+void drawPage();
+
+// lyrics.cpp
+void fetchLyrics();
 
 // ticker.cpp
 const char* getCoinGeckoId(const char* sym);

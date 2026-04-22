@@ -131,7 +131,7 @@ static esp_err_t config_page_handler(httpd_req_t* req) {
 
 static esp_err_t api_get_tickers_handler(httpd_req_t* req) {
   String list = prefs.getString("tickers", DEFAULT_TICKERS);
-  String key = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
+  String key = prefs.getString("stockkey", "d6m0k71r01qu3p05ktsgd6m0k71r01qu3p05ktt0");
   long gmt = prefs.getLong("gmtoff", 3600);
   long dst = prefs.getLong("dstoff", 0);
   int bri = prefs.getUChar("br_idle", 8);
@@ -161,7 +161,7 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
 
   // Read old values to compare
   String oldTickers = prefs.getString("tickers", DEFAULT_TICKERS);
-  String oldKey = prefs.getString("stockkey", "YOUR_FINNHUB_KEY");
+  String oldKey = prefs.getString("stockkey", "d6m0k71r01qu3p05ktsgd6m0k71r01qu3p05ktt0");
   bool tickersChanged = false;
   bool setChanged = false;
 
