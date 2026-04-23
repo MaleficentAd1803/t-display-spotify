@@ -11,16 +11,14 @@ A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST778
 - **Scrolling title** — bold FreeSans font, auto-scrolls when the title doesn't fit
 - **Artist, album & device name** — displayed on the right panel
 - **Play/pause icon** and **progress bar** with interpolated updates
-- **Synced lyrics** — fetched from LRCLIB, auto-scrolling with playback position on a dedicated page
 - **NTP clock** — small clock during playback, large centered clock when idle
 - **Stock, crypto & commodity ticker** — scrolling prices on the idle screen (CoinGecko + Finnhub)
 - **CPU die-temperature readout** — small chip icon + temperature on both idle and playing screens
 - **Web config UI** — manage ticker list, timezone, and brightness settings from any browser
 - **On-device HTTPS OAuth** — self-signed cert server runs on the ESP32; no external scripts needed
 - **WiFiManager captive portal** — no hardcoded SSIDs
-- **Page toggle** — single-click BOT to switch between now-playing and lyrics
 - **Screen flip** — long-press to rotate 180°, saved to NVS
-- **Screen on/off** — double-click to toggle the backlight
+- **Screen on/off** — single-click BOT to toggle the backlight
 - **Dual-core architecture** — rendering on core 1, network on core 0 for smooth animations
 - **PSRAM-aware allocations** — album art JPEG body lands in the 8 MB octal PSRAM, leaving the 320 KB internal heap for TLS and Wi-Fi
 - **Optimized polling** — persistent TLS connection, ETag/304 caching, stream-parsed JSON with field filtering, track-ID delta logic
@@ -43,8 +41,7 @@ A Spotify now-playing dashboard for the **LilyGO T-Display S3** (ESP32-S3, ST778
 | Next track | TOP double-click |
 | Previous track | TOP triple-click |
 | Flip screen | TOP long-press |
-| Toggle page (now-playing ↔ lyrics) | BOT single-click |
-| Screen on/off | BOT double-click |
+| Screen on/off | BOT single-click |
 | Reset WiFi + token | Hold BOT at boot |
 
 ## Setup
@@ -136,8 +133,7 @@ STOCKKEY:your_finnhub_api_key
 ```
 src/
   main.cpp       — setup, loop, button callbacks, background task
-  display.cpp    — all TFT drawing functions (now-playing + lyrics pages)
-  lyrics.cpp     — LRCLIB fetch + LRC parser (runs on core 0)
+  display.cpp    — all TFT drawing functions
   ticker.cpp     — price fetching (CoinGecko/Finnhub) and ticker rendering
   network.cpp    — OAuth flow, config web server, WiFi, serial input
 include/
@@ -170,11 +166,6 @@ The ESP32-S3 has two separate memory pools: ~320 KB of fast internal SRAM (share
 
 - **Album art buffer** allocates from PSRAM first and only spills to internal heap as a fallback.
 - **Persistent TLS clients** are kept only for endpoints polled frequently (Spotify API, album art CDN, ticker feeds). Each pinned TLS context eats ~30–50 KB of internal heap.
-- **Lyrics TLS is non-persistent** — LRCLIB is queried at most once per track change, so `WiFiClientSecure` and `HTTPClient` are function-locals that are torn down on return instead of pinning state between tracks.
-
-### Lyrics (LRCLIB)
-
-On track change, core 0 queries [LRCLIB](https://lrclib.net) with track/artist/album/duration. Synced LRC blobs are parsed into an in-memory array (`LyricLine[160]`, 96 bytes per line). On the lyrics page, core 1 advances through the lines in step with `progress` from the Spotify poll. Lines without a `[MM:SS.xx]` timestamp are skipped; chained timestamps (`[00:10][00:20]text`) are expanded. No auth, no API key.
 
 ## Libraries
 

@@ -39,7 +39,7 @@ const char* getCommodityFinnhubSymbol(const char* sym) {
 // ── Load ticker list from NVS ───────────────────────────
 void loadTickers() {
   String list = prefs.getString("tickers", DEFAULT_TICKERS);
-  Serial.printf("[Ticker] List: %s\n", list.c_str());
+  LOG("[Ticker] List: %s\n", list.c_str());
   numTickers = 0;
   int start = 0;
   while (start < (int)list.length() && numTickers < MAX_TICKERS) {
@@ -60,7 +60,7 @@ void loadTickers() {
     }
     start = comma + 1;
   }
-  Serial.printf("[Ticker] Loaded %d tickers\n", numTickers);
+  LOG("[Ticker] Loaded %d tickers\n", numTickers);
 }
 
 // ── Fetch crypto prices from CoinGecko (batch) ─────────
@@ -89,8 +89,11 @@ void fetchCryptoPrices() {
   cgHttp.begin(cgClient, url);
   cgHttp.addHeader("Accept", "application/json");
   cgHttp.addHeader("User-Agent", "ESP32");
+  netTicker.txBytes += url.length() + REQ_HDR_EST;
   int code = cgHttp.GET();
-  Serial.printf("[Ticker] CoinGecko HTTP %d\n", code);
+  int cgSz = cgHttp.getSize();
+  netTicker.rxBytes += (cgSz > 0 ? (uint32_t)cgSz : 0) + RESP_HDR_EST;
+  LOG("[Ticker] CoinGecko HTTP %d\n", code);
   if (code == 200) {
     // Stream-parse straight from the TLS socket — skips a ~2-20 KB String
     // allocation on internal heap that otherwise fragments during long idle.
@@ -105,12 +108,12 @@ void fetchCryptoPrices() {
         tickerItems[i].price = p;
         tickerItems[i].change = c;
         tickerItems[i].valid = true;
-        Serial.printf("[Ticker] %s = $%.2f (%.1f%%)\n", tickerItems[i].symbol, p, c);
+        LOG("[Ticker] %s = $%.2f (%.1f%%)\n", tickerItems[i].symbol, p, c);
       }
     }
     doc.clear();
   } else {
-    Serial.printf("[Ticker] CoinGecko error: %s\n", cgHttp.getString().c_str());
+    LOG("[Ticker] CoinGecko error: %s\n", cgHttp.getString().c_str());
   }
   cgHttp.end();
 }
@@ -144,8 +147,11 @@ void fetchStockPrices() {
     url += "&token=";
     url += stockApiKey;
     fhHttp.begin(fhClient, url);
+    netTicker.txBytes += url.length() + REQ_HDR_EST;
     int code = fhHttp.GET();
-    Serial.printf("[Ticker] Finnhub %s HTTP %d\n", tickerItems[i].symbol, code);
+    int fhSz = fhHttp.getSize();
+    netTicker.rxBytes += (fhSz > 0 ? (uint32_t)fhSz : 0) + RESP_HDR_EST;
+    LOG("[Ticker] Finnhub %s HTTP %d\n", tickerItems[i].symbol, code);
     if (code == 200) {
       JsonDocument doc;
       deserializeJson(doc, fhHttp.getStream());
@@ -155,7 +161,7 @@ void fetchStockPrices() {
         tickerItems[i].price = price;
         tickerItems[i].change = pct;
         tickerItems[i].valid = true;
-        Serial.printf("[Ticker] %s = $%.2f (%.1f%%)\n", tickerItems[i].symbol, price, pct);
+        LOG("[Ticker] %s = $%.2f (%.1f%%)\n", tickerItems[i].symbol, price, pct);
       }
       doc.clear();
     }
@@ -177,7 +183,7 @@ void recalcTickerWidth() {
     tickerTextW += tft.textWidth(chg) + TICKER_GAP;
   }
   tickerReady = (tickerTextW > 0);
-  Serial.printf("[Ticker] Width=%d ready=%d\n", tickerTextW, tickerReady);
+  LOG("[Ticker] Width=%d ready=%d\n", tickerTextW, tickerReady);
 }
 
 // ── Draw ticker items at x offset ───────────────────────

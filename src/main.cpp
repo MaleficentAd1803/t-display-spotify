@@ -17,8 +17,7 @@
 //   TOP double-click  → Next track
 //   TOP triple-click  → Previous track
 //   TOP long-press    → Flip screen orientation
-//   BOT single-click  → Switch page (Now Playing ↔ Lyrics)
-//   BOT double-click  → Screen on / off
+//   BOT single-click  → Screen on/off
 //
 //  CONFIG:
 //   Open http://<device-ip> in browser to manage tickers
@@ -92,7 +91,7 @@ static void setBrightness(uint8_t val, const char* src = "") {
     delay(3);
     blLevel = 0;
 #ifdef VERBOSE_BL
-    Serial.printf("[BL] %s level=0 (off)\n", src);
+    LOG("[BL] %s level=0 (off)\n", src);
 #else
     (void)src;
 #endif
@@ -112,7 +111,7 @@ static void setBrightness(uint8_t val, const char* src = "") {
   }
   blLevel = val;
 #ifdef VERBOSE_BL
-  Serial.printf("[BL] %s level=%d (pulses=%d)\n", src, val, pulses);
+  LOG("[BL] %s level=%d (pulses=%d)\n", src, val, pulses);
 #else
   (void)src; (void)pulses;
 #endif
@@ -146,10 +145,13 @@ volatile uint32_t      redrawFlags    = 0;
 volatile PendingAction pendingAction  = ACTION_NONE;
 volatile bool          tickerListChanged = false;
 volatile bool          settingsChanged   = false;
-volatile Page          currentPage       = PAGE_NOWPLAYING;
-volatile bool          lyricsFetchNeeded = false;
-static unsigned long   lastLyricDraw     = 0;
-#define LYRIC_DRAW_MS 250
+
+// Data usage counters (session total). HTTPClient doesn't expose wire bytes,
+// so TX is estimated from URL + headers + POST body; RX uses getSize() for
+// body plus a ~250 B fudge for response headers on 200s, or ~200 B on 304.
+NetStats netSpotify = {0, 0};
+NetStats netArt     = {0, 0};
+NetStats netTicker  = {0, 0};
 
 // CPU usage tracking (per-core busy time measurement)
 static unsigned long cpuLastReport     = 0;
@@ -188,7 +190,7 @@ String buildSpotifyBasicAuth() {
 
 // ── Refresh the Spotify access token ────────────────────
 static bool refreshAccessToken() {
-  Serial.println("[Token] Refreshing access token...");
+  LOGLN("[Token] Refreshing access token...");
   // Free mbedtls memory held by our keep-alive TLS sockets — the token
   // handshake needs ~30KB and the ESP32 can't allocate it while we hold
   // poll + art contexts (each ~30KB) alongside the library's own client.
@@ -207,7 +209,11 @@ static bool refreshAccessToken() {
 
   String rtoken = prefs.getString("rtoken", "");
   String body = "grant_type=refresh_token&refresh_token=" + rtoken;
+  netSpotify.txBytes += body.length() + 48 /*URL path*/ + REQ_HDR_EST + 64 /*Basic auth*/;
   int code = http.POST(body);
+  int rxSz = http.getSize();
+  if (rxSz > 0) netSpotify.rxBytes += (uint32_t)rxSz + RESP_HDR_EST;
+  else netSpotify.rxBytes += RESP_HDR_EST;
 
   if (code == 200) {
     JsonDocument doc;
@@ -217,14 +223,14 @@ static bool refreshAccessToken() {
     const char* newRt = doc["refresh_token"] | (const char*)nullptr;
     if (newRt && strlen(newRt) > 0) {
       prefs.putString("rtoken", newRt);
-      Serial.println("[Token] New refresh token saved");
+      LOGLN("[Token] New refresh token saved");
     }
     http.end();
-    Serial.printf("[Token] Access token obtained (%d chars)\n", accessToken.length());
+    LOG("[Token] Access token obtained (%d chars)\n", accessToken.length());
     return accessToken.length() > 0;
   }
 
-  Serial.printf("[Token] Refresh failed: %d\n", code);
+  LOG("[Token] Refresh failed: %d\n", code);
   http.end();
   return false;
 }
@@ -261,12 +267,12 @@ static void pollSpotifyData() {
 
   // Get access token if we don't have one yet
   if (accessToken.length() == 0 && !refreshAccessToken()) {
-    Serial.println("[Poll] No access token — skipping");
+    LOGLN("[Poll] No access token — skipping");
     return;
   }
 
 #ifdef VERBOSE_POLL
-  Serial.printf("[Poll] Heap: %u\n", ESP.getFreeHeap());
+  LOG("[Poll] Heap: %u\n", ESP.getFreeHeap());
 #endif
 
   pollHttp.begin(pollClient, "https://api.spotify.com/v1/me/player");
@@ -276,13 +282,17 @@ static void pollSpotifyData() {
     pollHttp.addHeader("If-None-Match", lastETag);
   }
 
+  // ~90 B request line + Bearer token + headers. Bearer is ~180 chars.
+  netSpotify.txBytes += 90 + accessToken.length() + lastETag.length() + REQ_HDR_EST;
+
   unsigned long t0 = millis();
   int code = pollHttp.GET();
   unsigned long rtt = millis() - t0;
 
   if (code == 304) {
     // Not Modified — nothing changed, just update poll time for interpolation
-    Serial.printf("[Poll] 304 (%lums)\n", rtt);
+    netSpotify.rxBytes += RESP_HDR_EST;  // headers only
+    LOG("[Poll] 304 (%lums)\n", rtt);
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     if (now.active) now.pollTime = millis();
     xSemaphoreGive(dataMutex);
@@ -291,6 +301,8 @@ static void pollSpotifyData() {
   }
 
   if (code == 200) {
+    int sz = pollHttp.getSize();
+    netSpotify.rxBytes += (sz > 0 ? (uint32_t)sz : 0) + RESP_HDR_EST;
     // Capture ETag for next request
     if (pollHttp.hasHeader("ETag")) {
       lastETag = pollHttp.header("ETag");
@@ -303,7 +315,7 @@ static void pollSpotifyData() {
     pollHttp.end();
 
     if (err) {
-      Serial.printf("[Poll] JSON error: %s (%lums)\n", err.c_str(), rtt);
+      LOG("[Poll] JSON error: %s (%lums)\n", err.c_str(), rtt);
       return;
     }
 
@@ -319,7 +331,7 @@ static void pollSpotifyData() {
     // If paused and already idle, just stay idle
     if (!play && !now.active && !idChanged) {
       xSemaphoreGive(dataMutex);
-      Serial.printf("[Poll] Idle, no change (%lums)\n", rtt);
+      LOG("[Poll] Idle, no change (%lums)\n", rtt);
       return;
     }
 
@@ -350,15 +362,9 @@ static void pollSpotifyData() {
       now.active   = true;
       xSemaphoreGive(dataMutex);
 
-      Serial.printf("[Poll] New track: %s | %s (%lums)\n", trk.c_str(), art.c_str(), rtt);
+      LOG("[Poll] New track: %s | %s (%lums)\n", trk.c_str(), art.c_str(), rtt);
       if (wasInactive) redrawFlags |= RFLAG_GONE_ACTIVE;
       redrawFlags |= RFLAG_TRACK_CHANGED;
-      // Invalidate previous track's lyrics immediately so the lyrics page
-      // shows "Loading..." instead of mis-syncing the old lines.
-      numLyrics = 0;
-      lyricsTrackId = "";
-      lyricsTriedCurrent = false;
-      lyricsFetchNeeded = true;
 
     } else {
       // ── Same track — lightweight update (progress + play state) ──
@@ -371,15 +377,16 @@ static void pollSpotifyData() {
       now.pollTime = millis();
       xSemaphoreGive(dataMutex);
 
-      Serial.printf("[Poll] Update: prog=%d play=%d (%lums)\n", prog, play, rtt);
+      LOG("[Poll] Update: prog=%d play=%d (%lums)\n", prog, play, rtt);
       if (deviceChanged)       redrawFlags |= RFLAG_DEVICE_CHANGED;
       else if (playChanged)    redrawFlags |= RFLAG_PLAY_CHANGED;
       // No flag = progress-only (handled by interpolation in loop)
     }
 
   } else if (code == 204) {
+    netSpotify.rxBytes += RESP_HDR_EST;
     pollHttp.end();
-    Serial.printf("[Poll] Nothing playing (%lums)\n", rtt);
+    LOG("[Poll] Nothing playing (%lums)\n", rtt);
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool wasActive = now.active;
     if (wasActive) now = Playback{};
@@ -388,18 +395,21 @@ static void pollSpotifyData() {
       redrawFlags |= RFLAG_GONE_IDLE;
       bgTickerFetchNeeded = true;
       lastETag = "";
+      // CDN will close the keep-alive during idle — drop it now so the next
+      // wake opens a fresh handshake instead of retrying on a dead socket.
+      stopAlbumArtClient();
     }
 
   } else if (code == 401) {
     pollHttp.end();
-    Serial.printf("[Poll] 401 — refreshing token (%lums)\n", rtt);
+    LOG("[Poll] 401 — refreshing token (%lums)\n", rtt);
     accessToken = "";
     lastETag = "";
     refreshAccessToken();
 
   } else {
     pollHttp.end();
-    Serial.printf("[Poll] HTTP %d (%lums)\n", code, rtt);
+    LOG("[Poll] HTTP %d (%lums)\n", code, rtt);
     if (code < 0) {
       // Connection lost — reset client for fresh TLS handshake
       pollClient.stop();
@@ -416,7 +426,7 @@ static void backgroundTask(void* param) {
   // Unsubscribe IDLE0 from task watchdog — Spotify API calls can block
   // Core 0 for several seconds during TLS handshakes, starving IDLE0.
   esp_task_wdt_delete(xTaskGetIdleTaskHandleForCPU(0));
-  Serial.println("[BG] Background task started on core 0");
+  LOGLN("[BG] Background task started on core 0");
 
   while (true) {
     unsigned long loopStart = micros();
@@ -435,12 +445,12 @@ static void backgroundTask(void* param) {
           case ACTION_PAUSE: sp->pause_playback();          break;
           default: break;
         }
-        Serial.printf("[BG] Spotify action %d: %lums\n", action, millis() - tAct);
+        LOG("[BG] Spotify action %d: %lums\n", action, millis() - tAct);
         // Poll immediately after action to get new state
         delay(400);
         unsigned long tPoll = millis();
         pollSpotifyData();
-        Serial.printf("[BG] Post-action poll: %lums\n", millis() - tPoll);
+        LOG("[BG] Post-action poll: %lums\n", millis() - tPoll);
         bgLastPoll = millis();
       }
     }
@@ -461,24 +471,16 @@ static void backgroundTask(void* param) {
       xSemaphoreGive(dataMutex);
     }
 
-    // Lyrics fetch (on track change)
-    if (lyricsFetchNeeded && isActive) {
-      lyricsFetchNeeded = false;
-      unsigned long tLyr = millis();
-      fetchLyrics();
-      Serial.printf("[BG] Lyrics fetch total: %lums\n", millis() - tLyr);
-    }
-
     // Ticker price fetching
     if (!isActive && numTickers > 0 &&
         (ms - bgLastTickerFetch >= TICKER_FETCH_MS || bgTickerFetchNeeded)) {
       bgTickerFetchNeeded = false;
       bgLastTickerFetch = ms;
-      Serial.println("[BG] Fetching prices...");
+      LOGLN("[BG] Fetching prices...");
       fetchCryptoPrices();
       fetchStockPrices();
       redrawFlags |= RFLAG_TICKER_READY;
-      Serial.println("[BG] Price fetch done");
+      LOGLN("[BG] Price fetch done");
     }
 
     // WiFi reconnect
@@ -497,13 +499,13 @@ static void backgroundTask(void* param) {
 // ============================================================
 static void onSkip() {
   if (!sp || !spotifyReady) return;
-  Serial.println("[Button] Skip");
+  LOGLN("[Button] Skip");
   pendingAction = ACTION_SKIP;
 }
 
 static void onPrev() {
   if (!sp || !spotifyReady) return;
-  Serial.println("[Button] Previous");
+  LOGLN("[Button] Previous");
   pendingAction = ACTION_PREV;
 }
 
@@ -516,24 +518,16 @@ static void onPlayPause() {
   xSemaphoreGive(dataMutex);
 
   if (!active) return;
-  Serial.printf("[Button] %s\n", isPlaying ? "Play" : "Pause");
-  // Only update icon when the Now Playing page is visible
-  if (currentPage == PAGE_NOWPLAYING) drawIcon(isPlaying);
+  LOG("[Button] %s\n", isPlaying ? "Play" : "Pause");
+  drawIcon(isPlaying);
   pendingAction = isPlaying ? ACTION_PLAY : ACTION_PAUSE;
 }
 
 static void onTopMulti();   // fwd
 
-static void onPageToggle() {
-  currentPage = (currentPage == PAGE_NOWPLAYING) ? PAGE_LYRICS : PAGE_NOWPLAYING;
-  Serial.printf("[Button] Page -> %s\n",
-                currentPage == PAGE_LYRICS ? "LYRICS" : "NOW-PLAYING");
-  redrawFlags |= RFLAG_PAGE_CHANGED;
-}
-
 static void onScreenToggle() {
   screenOn = !screenOn;
-  Serial.printf("[Button] Screen %s\n", screenOn ? "ON" : "OFF");
+  LOG("[Button] Screen %s\n", screenOn ? "ON" : "OFF");
   if (screenOn) {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     bool active = now.active;
@@ -551,19 +545,15 @@ static void onFlipScreen() {
   prefs.putUChar("rotation", screenRotation);
   tft.setRotation(screenRotation);
   tft.fillScreen(TFT_BLACK);
-  Serial.printf("[Button] Rotation flipped to %d\n", screenRotation);
+  LOG("[Button] Rotation flipped to %d\n", screenRotation);
 
   xSemaphoreTake(dataMutex, portMAX_DELAY);
   bool active = now.active;
   String imgUrl = now.imgUrl;
   xSemaphoreGive(dataMutex);
 
-  if (currentPage == PAGE_LYRICS && active) {
-    drawLyricsPage();
-  } else {
-    if (active) showAlbumArt(imgUrl);
-    drawInfo();
-  }
+  if (active) showAlbumArt(imgUrl);
+  drawInfo();
 }
 
 static void onTopMulti() {
@@ -576,7 +566,7 @@ static void onTopMulti() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  Serial.printf("\n[Boot] Reset reason: %d | Free heap: %u | Min heap: %u | PSRAM: %u/%u\n",
+  LOG("\n[Boot] Reset reason: %d | Free heap: %u | Min heap: %u | PSRAM: %u/%u\n",
                 esp_reset_reason(), ESP.getFreeHeap(), ESP.getMinFreeHeap(),
                 (unsigned)ESP.getFreePsram(), (unsigned)ESP.getPsramSize());
 
@@ -618,7 +608,7 @@ void setup() {
     showStatus("Resetting all...");
     wm.resetSettings();
     prefs.remove("rtoken");
-    Serial.println("[Reset] WiFi + Spotify token cleared");
+    LOGLN("[Reset] WiFi + Spotify token cleared");
     delay(800);
   }
 
@@ -635,7 +625,7 @@ void setup() {
     tft.drawString("Then open browser:", SCR_W / 2, 90);
     tft.drawString("http://192.168.4.1", SCR_W / 2, 120);
     tft.setTextDatum(TL_DATUM);
-    Serial.println("[WiFi] Config portal started");
+    LOGLN("[WiFi] Config portal started");
   });
 
   if (!wm.autoConnect("SpotifyDisplay")) {
@@ -651,12 +641,12 @@ void setup() {
   long gmtOff = prefs.getLong("gmtoff", 3600);
   long dstOff = prefs.getLong("dstoff", 0);
   configTime(gmtOff, dstOff, "pool.ntp.org", "time.nist.gov");
-  Serial.println("[NTP] Syncing time...");
+  LOGLN("[NTP] Syncing time...");
   struct tm t;
   if (getLocalTime(&t, 5000)) {
-    Serial.printf("[NTP] Time: %02d:%02d:%02d\n", t.tm_hour, t.tm_min, t.tm_sec);
+    LOG("[NTP] Time: %02d:%02d:%02d\n", t.tm_hour, t.tm_min, t.tm_sec);
   } else {
-    Serial.println("[NTP] Sync failed — will retry in background");
+    LOGLN("[NTP] Sync failed — will retry in background");
   }
 
   // ── Spotify auth ───────────────────────────────────────
@@ -687,7 +677,7 @@ void setup() {
 
   spotifyReady = true;
   showStatus("Spotify ready!");
-  Serial.println("[Spotify] Ready");
+  LOGLN("[Spotify] Ready");
   delay(500);
 
   // ── Sprites ────────────────────────────────────────────
@@ -703,12 +693,12 @@ void setup() {
   // Migrate old 0-255 range values to 0-16 range
   if (brightPlay > BL_STEPS) { brightPlay = BL_STEPS; prefs.putUChar("br_play", brightPlay); }
   if (brightIdle > BL_STEPS) { brightIdle = BL_STEPS / 2; prefs.putUChar("br_idle", brightIdle); }
-  Serial.printf("[Boot] Loaded brightness: play=%d idle=%d\n", brightPlay, brightIdle);
+  LOG("[Boot] Loaded brightness: play=%d idle=%d\n", brightPlay, brightIdle);
   if (stockApiKey.length() == 0) {
-    Serial.println("[Ticker] No stock API key. Get free key at https://finnhub.io/register");
-    Serial.println("[Ticker] Then send: STOCKKEY:your_key_here");
+    LOGLN("[Ticker] No stock API key. Get free key at https://finnhub.io/register");
+    LOGLN("[Ticker] Then send: STOCKKEY:your_key_here");
   } else {
-    Serial.println("[Ticker] Stock API key loaded");
+    LOGLN("[Ticker] Stock API key loaded");
   }
 
   // ── Buttons ────────────────────────────────────────────
@@ -717,9 +707,8 @@ void setup() {
   topBtn.attachDoubleClick(onSkip);
   topBtn.attachMultiClick(onTopMulti);
   topBtn.attachLongPressStart(onFlipScreen);
-  // Bottom: 1-click=page toggle, 2-click=screen on/off
-  botBtn.attachClick(onPageToggle);
-  botBtn.attachDoubleClick(onScreenToggle);
+  // Bottom: 1-click=screen on/off
+  botBtn.attachClick(onScreenToggle);
 
   // ── Config web server ──────────────────────────────────
   startConfigServer();
@@ -749,6 +738,195 @@ void setup() {
 }
 
 // ============================================================
+//  Serial telemetry TUI (runs on core 1 inside loop)
+// ============================================================
+#if TUI_ENABLED
+static float lastCore0Pct = 0;
+static float lastCore1Pct = 0;
+static unsigned long lastTuiDraw = 0;
+static bool          tuiInit     = false;
+
+static void fmtBytes(char* buf, size_t n, uint32_t bytes) {
+  if (bytes < 1024UL)             snprintf(buf, n, "%4lu B ", (unsigned long)bytes);
+  else if (bytes < 1024UL * 1024) snprintf(buf, n, "%6.1f KB", bytes / 1024.0f);
+  else                            snprintf(buf, n, "%6.2f MB", bytes / (1024.0f * 1024));
+}
+
+static void truncPad(char* dst, size_t n, const char* src, size_t width) {
+  size_t sl = strlen(src);
+  if (sl > width) {
+    if (width < 2) { dst[0] = 0; return; }
+    memcpy(dst, src, width - 2);
+    dst[width - 2] = '.'; dst[width - 1] = '.'; dst[width] = 0;
+  } else {
+    memcpy(dst, src, sl);
+    for (size_t i = sl; i < width; i++) dst[i] = ' ';
+    dst[width] = 0;
+  }
+  (void)n;
+}
+
+// ANSI color palette (256-color / bold)
+#define CBRD    "\x1b[38;5;244m"   // border: grey
+#define CTTL    "\x1b[1;96m"       // title: bold bright cyan
+#define CSEC    "\x1b[1;95m"       // section: bold magenta
+#define CLBL    "\x1b[1;97m"       // label: bold bright white
+#define CVAL    "\x1b[0m"          // value: default
+#define CGOOD   "\x1b[92m"         // green
+#define CWARN   "\x1b[93m"         // yellow
+#define CINFO   "\x1b[96m"         // cyan
+#define CBAD    "\x1b[91m"         // red
+#define CRST    "\x1b[0m"
+// Box = 66 cols: '|' at col 1, content 2..65, '|' at col 66.
+#define TUI_R   "\x1b[66G" CBRD "|" CRST "\r\n"   // jump to col 66, right border
+#define TUI_L   CBRD "|" CRST "  "                 // left border + 2-space indent
+
+static void drawTui() {
+  if (!tuiInit) {
+    Serial.print("\x1b[?25l");   // hide cursor
+    tuiInit = true;
+  }
+  Serial.print("\x1b[H\x1b[J");  // home + clear
+
+  unsigned long upS = millis() / 1000;
+  unsigned int uh = upS / 3600, um = (upS / 60) % 60, us = upS % 60;
+
+  String track, artist, album, device;
+  int prog, dur;
+  bool playing, active;
+  xSemaphoreTake(dataMutex, portMAX_DELAY);
+  track   = now.track;   artist = now.artist;  album = now.album;
+  device  = now.device;  prog   = now.progress; dur  = now.duration;
+  playing = now.playing; active = now.active;
+  if (active && playing) prog += (int)(millis() - now.pollTime);
+  xSemaphoreGive(dataMutex);
+
+  // Health-based colors
+  int rssi = (int)WiFi.RSSI();
+  const char* rssiC = (rssi < -75) ? CBAD : (rssi < -65) ? CWARN : CGOOD;
+  const char* tempC_ = (cpuTempC > 70) ? CBAD : (cpuTempC > 55) ? CWARN : CGOOD;
+  unsigned freeHeap = ESP.getFreeHeap();
+  const char* heapC = (freeHeap < 30000) ? CBAD : (freeHeap < 60000) ? CWARN : CGOOD;
+
+  char line[256], fld[80];
+
+  // ── Top border ──
+  Serial.print(CBRD "+================================================================+" CRST "\r\n");
+
+  // ── Title + uptime ──
+  snprintf(line, sizeof(line),
+    TUI_L CTTL "T-Display Spotify" CRST "                          "
+    CLBL "up " CVAL "%02u:%02u:%02u" TUI_R,
+    uh, um, us);
+  Serial.print(line);
+
+  // ── Divider ──
+  Serial.print(CBRD "+================================================================+" CRST "\r\n");
+
+  // ── Heap / PSRAM / Temp ──
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "Heap : " "%s%6u B" CRST "   "
+    CLBL "PSRAM: " CVAL "%7u B" CRST "   "
+    CLBL "Temp: " "%s%5.1fC" CRST TUI_R,
+    heapC, freeHeap, (unsigned)ESP.getFreePsram(), tempC_, cpuTempC);
+  Serial.print(line);
+
+  // ── Core0 / Core1 / WiFi ──
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "Core0: " CVAL "%5.1f%%" "   "
+    CLBL "Core1: " CVAL "%5.1f%%" "         "
+    CLBL "WiFi: " "%s%4d dBm" CRST TUI_R,
+    lastCore0Pct, lastCore1Pct, rssiC, rssi);
+  Serial.print(line);
+
+  // ── IP ──
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "IP   : " CINFO "%s" CRST TUI_R,
+    WiFi.localIP().toString().c_str());
+  Serial.print(line);
+
+  // ── Now playing section header ──
+  Serial.print(CBRD "+-- " CSEC "Now playing" CBRD " -------------------------------------------------+" CRST "\r\n");
+
+  if (active) {
+    truncPad(fld, sizeof(fld), track.c_str(), 53);
+    snprintf(line, sizeof(line), TUI_L CLBL "Track  : " CVAL "%s" CRST TUI_R, fld);
+    Serial.print(line);
+    truncPad(fld, sizeof(fld), artist.c_str(), 53);
+    snprintf(line, sizeof(line), TUI_L CLBL "Artist : " CVAL "%s" CRST TUI_R, fld);
+    Serial.print(line);
+    truncPad(fld, sizeof(fld), album.c_str(), 53);
+    snprintf(line, sizeof(line), TUI_L CLBL "Album  : " CVAL "%s" CRST TUI_R, fld);
+    Serial.print(line);
+    truncPad(fld, sizeof(fld), device.c_str(), 53);
+    snprintf(line, sizeof(line), TUI_L CLBL "Device : " CINFO "%s" CRST TUI_R, fld);
+    Serial.print(line);
+
+    int pm = prog / 60000, ps = (prog / 1000) % 60;
+    int dm = dur  / 60000, ds = (dur  / 1000) % 60;
+    const char* stC = playing ? CGOOD : CWARN;
+    const char* stT = playing ? "Playing" : "Paused ";
+    snprintf(line, sizeof(line),
+      TUI_L CLBL "Status : " "%s%s" CRST "  " CVAL "%d:%02d / %d:%02d" CRST TUI_R,
+      stC, stT, pm, ps, dm, ds);
+    Serial.print(line);
+  } else {
+    snprintf(line, sizeof(line),
+      TUI_L CLBL "Status : " CWARN "Idle" CRST TUI_R);
+    Serial.print(line);
+  }
+
+  // ── Data usage section header ──
+  Serial.print(CBRD "+-- " CSEC "Data usage (session)" CBRD " ----------------------------------------+" CRST "\r\n");
+
+  snprintf(line, sizeof(line),
+    TUI_L "             " CLBL "      TX            RX" CRST TUI_R);
+  Serial.print(line);
+
+  char tx[16], rx[16];
+  fmtBytes(tx, sizeof(tx), netSpotify.txBytes);
+  fmtBytes(rx, sizeof(rx), netSpotify.rxBytes);
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "%-12s" CWARN "%10s" CRST "    " CINFO "%10s" CRST TUI_R,
+    "Spotify", tx, rx);
+  Serial.print(line);
+
+  fmtBytes(tx, sizeof(tx), netArt.txBytes);
+  fmtBytes(rx, sizeof(rx), netArt.rxBytes);
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "%-12s" CWARN "%10s" CRST "    " CINFO "%10s" CRST TUI_R,
+    "Album art", tx, rx);
+  Serial.print(line);
+
+  fmtBytes(tx, sizeof(tx), netTicker.txBytes);
+  fmtBytes(rx, sizeof(rx), netTicker.rxBytes);
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "%-12s" CWARN "%10s" CRST "    " CINFO "%10s" CRST TUI_R,
+    "Ticker", tx, rx);
+  Serial.print(line);
+
+  // Separator inside section
+  snprintf(line, sizeof(line),
+    TUI_L CBRD "--------------------------------------------" CRST TUI_R);
+  Serial.print(line);
+
+  uint32_t totTx = netSpotify.txBytes + netArt.txBytes + netTicker.txBytes;
+  uint32_t totRx = netSpotify.rxBytes + netArt.rxBytes + netTicker.rxBytes;
+  fmtBytes(tx, sizeof(tx), totTx);
+  fmtBytes(rx, sizeof(rx), totRx);
+  char tot[16]; fmtBytes(tot, sizeof(tot), totTx + totRx);
+  snprintf(line, sizeof(line),
+    TUI_L CLBL "%-12s" CWARN "%10s" CRST "    " CINFO "%10s" CRST
+    "   " CVAL "(total " CLBL "%s" CVAL ")" CRST TUI_R,
+    "Total", tx, rx, tot);
+  Serial.print(line);
+
+  // ── Bottom border ──
+  Serial.print(CBRD "+================================================================+" CRST "\r\n");
+}
+#endif  // TUI_ENABLED
+
+// ============================================================
 //  loop() — core 1: rendering & animations only
 //  Never blocks on network — all HTTP done on core 0.
 // ============================================================
@@ -769,7 +947,7 @@ void loop() {
       if (ms - brightSettingsAt > 3000) setBrightness(brightIdle, "idle");
       tft.fillScreen(TFT_BLACK);
       xSemaphoreTake(dataMutex, portMAX_DELAY);
-      drawInfo();  // idle view regardless of currentPage (lyrics needs active track)
+      drawInfo();
       xSemaphoreGive(dataMutex);
     }
 
@@ -787,55 +965,19 @@ void loop() {
       if (ms - brightSettingsAt > 3000) setBrightness(brightPlay, "track");
 
       xSemaphoreTake(dataMutex, portMAX_DELAY);
-      if (currentPage == PAGE_LYRICS) {
-        drawLyricsPage();  // shows "Loading lyrics..." until fetch completes
-      } else {
-        drawInfo();
-      }
+      drawInfo();
       xSemaphoreGive(dataMutex);
 
-      if (currentPage == PAGE_NOWPLAYING) showAlbumArt(imgUrl);
+      showAlbumArt(imgUrl);
     } else if (flags & RFLAG_DEVICE_CHANGED) {
-      if (currentPage == PAGE_NOWPLAYING) {
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        drawInfo();
-        xSemaphoreGive(dataMutex);
-      }
-    } else if (flags & RFLAG_PLAY_CHANGED) {
-      if (currentPage == PAGE_NOWPLAYING) {
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        drawIcon(now.playing);
-        drawBar(now.progress, now.duration);
-        xSemaphoreGive(dataMutex);
-      }
-    }
-
-    if (flags & RFLAG_PAGE_CHANGED) {
-      String imgUrl;
       xSemaphoreTake(dataMutex, portMAX_DELAY);
-      bool active = now.active;
-      imgUrl = now.imgUrl;
+      drawInfo();
       xSemaphoreGive(dataMutex);
-      tft.fillScreen(TFT_BLACK);
-      lastTimeStr = "";
-      if (currentPage == PAGE_LYRICS && active) {
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        drawLyricsPage();
-        xSemaphoreGive(dataMutex);
-      } else {
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        drawInfo();
-        xSemaphoreGive(dataMutex);
-        if (active) showAlbumArt(imgUrl);
-      }
-    }
-
-    if (flags & RFLAG_LYRICS_READY) {
-      if (currentPage == PAGE_LYRICS && now.active) {
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        drawLyricsPage();
-        xSemaphoreGive(dataMutex);
-      }
+    } else if (flags & RFLAG_PLAY_CHANGED) {
+      xSemaphoreTake(dataMutex, portMAX_DELAY);
+      drawIcon(now.playing);
+      drawBar(now.progress, now.duration);
+      xSemaphoreGive(dataMutex);
     }
 
     if (flags & RFLAG_TICKER_READY) {
@@ -844,25 +986,15 @@ void loop() {
   }
 
   // ── Progress bar (interpolated) ───────────────────────
-  if (screenOn && currentPage == PAGE_NOWPLAYING &&
-      now.active && now.playing && ms - lastBar >= BAR_MS) {
+  if (screenOn && now.active && now.playing && ms - lastBar >= BAR_MS) {
     lastBar = ms;
     int elapsed = ms - now.pollTime;
     int cur = min(now.progress + (int)elapsed, now.duration);
     drawBar(cur, now.duration);
   }
 
-  // ── Lyrics page update (track current line) ───────────
-  if (screenOn && currentPage == PAGE_LYRICS && now.active &&
-      ms - lastLyricDraw >= LYRIC_DRAW_MS) {
-    lastLyricDraw = ms;
-    xSemaphoreTake(dataMutex, portMAX_DELAY);
-    drawLyricsUpdate();
-    xSemaphoreGive(dataMutex);
-  }
-
   // ── Title scrolling ───────────────────────────────────
-  if (screenOn && currentPage == PAGE_NOWPLAYING && now.active && titlePixelW > TXT_W) {
+  if (screenOn && now.active && titlePixelW > TXT_W) {
     if (scrollPaused) {
       if (ms >= scrollPauseAt) {
         scrollPaused = false;
@@ -883,7 +1015,7 @@ void loop() {
   }
 
   // ── Clock ─────────────────────────────────────────────
-  if (screenOn && currentPage == PAGE_NOWPLAYING && ms - lastClock >= CLOCK_MS) {
+  if (screenOn && ms - lastClock >= CLOCK_MS) {
     lastClock = ms;
     if (now.active) {
       drawClock();
@@ -908,7 +1040,7 @@ void loop() {
     settingsChanged = false;
     brightPlay = prefs.getUChar("br_play", 16);
     brightIdle = prefs.getUChar("br_idle", 8);
-    Serial.printf("[Settings] Applied brightness: play=%d idle=%d\n", brightPlay, brightIdle);
+    LOG("[Settings] Applied brightness: play=%d idle=%d\n", brightPlay, brightIdle);
     long gmt = prefs.getLong("gmtoff", 3600);
     long dst = prefs.getLong("dstoff", 0);
     configTime(gmt, dst, "pool.ntp.org", "time.nist.gov");
@@ -935,6 +1067,14 @@ void loop() {
   // ── Serial input ──────────────────────────────────────
   checkSerialInput();
 
+#if TUI_ENABLED
+  // ── Telemetry TUI repaint ────────────────────────────
+  if (ms - lastTuiDraw >= TUI_REFRESH_MS) {
+    lastTuiDraw = ms;
+    drawTui();
+  }
+#endif
+
   // ── CPU usage report ──────────────────────────────────
   core1BusyUs += micros() - loopStart;
   if (ms - cpuLastReport >= CPU_REPORT_MS) {
@@ -942,9 +1082,13 @@ void loop() {
     float c1 = elapsed > 0 ? 100.0f * core1BusyUs / elapsed : 0;
     float c0 = elapsed > 0 ? 100.0f * core0BusyUs / elapsed : 0;
     cpuTempC = temperatureRead();
-    Serial.printf("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u  Temp: %.1fC\n",
+#if TUI_ENABLED
+    lastCore0Pct = c0;
+    lastCore1Pct = c1;
+#endif
+    LOG("[CPU] Core 0: %.1f%%  Core 1: %.1f%%  Heap: %u  Temp: %.1fC\n",
                   c0, c1, ESP.getFreeHeap(), cpuTempC);
-    if (screenOn && currentPage == PAGE_NOWPLAYING) {
+    if (screenOn) {
       if (now.active) {
         drawCpuTemp(CPU_TEMP_PLAY_X, CPU_TEMP_PLAY_Y, cpuTempC, COLOR_DIM_GREY);
       } else {

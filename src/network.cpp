@@ -153,7 +153,7 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
     return ESP_FAIL;
   }
   buf[ret] = '\0';
-  Serial.printf("[Web] POST body (%d bytes): %s\n", ret, buf);
+  LOG("[Web] POST body (%d bytes): %s\n", ret, buf);
   JsonDocument doc;
   deserializeJson(doc, buf);
   const char* t = doc["tickers"] | "";
@@ -197,14 +197,14 @@ static esp_err_t api_post_tickers_handler(httpd_req_t* req) {
     uint8_t newBri = (rawBri < 1) ? 1 : (rawBri > 16) ? 16 : (uint8_t)rawBri;
     prefs.putUChar("br_idle", newBri);
     setChanged = true;
-    Serial.printf("[Web] Idle brightness: raw=%d level=%d\n", rawBri, newBri);
+    LOG("[Web] Idle brightness: raw=%d level=%d\n", rawBri, newBri);
   }
   if (!doc["brp"].isNull()) {
     int rawBrp = doc["brp"].as<int>();
     uint8_t newBrp = (rawBrp < 1) ? 1 : (rawBrp > 16) ? 16 : (uint8_t)rawBrp;
     prefs.putUChar("br_play", newBrp);
     setChanged = true;
-    Serial.printf("[Web] Play brightness: raw=%d level=%d\n", rawBrp, newBrp);
+    LOG("[Web] Play brightness: raw=%d level=%d\n", rawBrp, newBrp);
   }
 
   doc.clear();
@@ -296,7 +296,7 @@ void startConfigServer() {
     httpd_register_uri_handler(configServer, &p3);
     httpd_register_uri_handler(configServer, &p4);
     httpd_register_uri_handler(configServer, &p5);
-    Serial.printf("[Config] Web UI: http://%s\n", WiFi.localIP().toString().c_str());
+    LOG("[Config] Web UI: http://%s\n", WiFi.localIP().toString().c_str());
   }
 }
 
@@ -358,10 +358,10 @@ static String exchangeCodeForToken(const String& code) {
     JsonDocument doc;
     deserializeJson(doc, http.getString());
     refreshToken = doc["refresh_token"] | "";
-    Serial.printf("[OAuth] Got refresh token: %s\n", refreshToken.c_str());
+    LOG("[OAuth] Got refresh token: %s\n", refreshToken.c_str());
   } else {
-    Serial.printf("[OAuth] Token exchange failed: %d\n", httpCode);
-    Serial.println(http.getString());
+    LOG("[OAuth] Token exchange failed: %d\n", httpCode);
+    LOGLN(http.getString());
   }
 
   http.end();
@@ -386,7 +386,7 @@ String runOAuthFlow() {
   httpd_handle_t server = NULL;
   esp_err_t err = httpd_ssl_start(&server, &config);
   if (err != ESP_OK) {
-    Serial.printf("[OAuth] HTTPS server failed: %s\n", esp_err_to_name(err));
+    LOG("[OAuth] HTTPS server failed: %s\n", esp_err_to_name(err));
     return "";
   }
 
@@ -426,7 +426,7 @@ String runOAuthFlow() {
     };
     httpd_register_uri_handler(httpServer, &redirect);
     httpd_register_uri_handler(httpServer, &redirectCb);
-    Serial.println("[OAuth] HTTP redirect server on port 80");
+    LOGLN("[OAuth] HTTP redirect server on port 80");
   }
 
   httpd_uri_t root_uri     = { .uri = "/",         .method = HTTP_GET, .handler = oauth_root_handler };
@@ -434,7 +434,7 @@ String runOAuthFlow() {
   httpd_register_uri_handler(server, &root_uri);
   httpd_register_uri_handler(server, &callback_uri);
 
-  Serial.printf("[OAuth] HTTPS server running on https://%s\n", ip.c_str());
+  LOG("[OAuth] HTTPS server running on https://%s\n", ip.c_str());
 
   tft.fillScreen(TFT_BLACK);
   tft.setTextFont(2);
@@ -476,14 +476,14 @@ String runOAuthFlow() {
 // ── WiFi auto-reconnect ─────────────────────────────────
 void ensureWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
-  Serial.println("[WiFi] reconnecting...");
+  LOGLN("[WiFi] reconnecting...");
   WiFi.reconnect();
   unsigned long t = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t < 10000) {
     delay(500);
   }
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("[WiFi] OK");
+    LOGLN("[WiFi] OK");
   }
 }
 
@@ -497,14 +497,14 @@ void checkSerialInput() {
     list.trim();
     if (list.length() > 0) {
       prefs.putString("tickers", list);
-      Serial.printf("[Ticker] Saved: %s\n", list.c_str());
+      LOG("[Ticker] Saved: %s\n", list.c_str());
       tickerListChanged = true;
     }
   } else if (line.startsWith("STOCKKEY:")) {
     String key = line.substring(9);
     key.trim();
     prefs.putString("stockkey", key);
-    Serial.printf("[Ticker] Stock API key saved (%d chars)\n", key.length());
+    LOG("[Ticker] Stock API key saved (%d chars)\n", key.length());
     tickerListChanged = true;
   }
 }

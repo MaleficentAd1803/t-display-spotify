@@ -94,6 +94,36 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define BAR_MS       500
 #define WIFI_MS      30000
 
+// ── Serial telemetry TUI ─────────────────────────────────
+// When enabled, all log output is suppressed and a fixed-frame
+// telemetry dashboard is repainted to the serial console using
+// ANSI escape sequences. Set to 0 for a normal verbose log.
+#define TUI_ENABLED 1
+#define TUI_REFRESH_MS 500
+
+#if TUI_ENABLED
+  #define LOG(...)    ((void)0)
+  #define LOGLN(x)    ((void)0)
+  #define LOGP(x)     ((void)0)
+#else
+  #define LOG(...)    Serial.printf(__VA_ARGS__)
+  #define LOGLN(x)    Serial.println(x)
+  #define LOGP(x)     Serial.print(x)
+#endif
+
+// Per-category byte counters (accumulated across session).
+// HTTPClient doesn't expose wire bytes, so TX uses URL+body+header estimate
+// and RX uses getSize() for the body plus a fudge for response headers.
+#define REQ_HDR_EST  200
+#define RESP_HDR_EST 250
+struct NetStats {
+  uint32_t txBytes;
+  uint32_t rxBytes;
+};
+extern NetStats netSpotify;   // playback polling + token refresh
+extern NetStats netArt;       // album art CDN
+extern NetStats netTicker;    // CoinGecko + Finnhub
+
 // ── Colors (RGB565) ──────────────────────────────────────
 #define COLOR_DIM_GREY   0x7BEF
 #define COLOR_DARK_GREY  0x4208
@@ -109,26 +139,9 @@ extern const char* SPOTIFY_CLIENT_SECRET;
 #define RFLAG_GONE_IDLE      (1 << 3)
 #define RFLAG_GONE_ACTIVE    (1 << 4)
 #define RFLAG_TICKER_READY   (1 << 5)
-#define RFLAG_LYRICS_READY   (1 << 6)
-#define RFLAG_PAGE_CHANGED   (1 << 7)
 
 // ── Button actions (set by core 1, consumed by core 0) ──
 enum PendingAction { ACTION_NONE, ACTION_SKIP, ACTION_PREV, ACTION_PLAY, ACTION_PAUSE };
-
-// ── Pages ───────────────────────────────────────────────
-enum Page { PAGE_NOWPLAYING, PAGE_LYRICS };
-
-// ── Lyrics ──────────────────────────────────────────────
-#define MAX_LYRIC_LINES 160
-#define LYRIC_TEXT_LEN  96
-// Highlight lines this many ms *before* their LRC timestamp, since
-// most LRC files mark the exact word onset — showing 0.5 s early lets
-// the eye land on the line right as it starts being sung.
-#define LYRIC_LEAD_MS   500
-struct LyricLine {
-  int  timeMs;
-  char text[LYRIC_TEXT_LEN];
-};
 
 // ── CoinGecko crypto mapping ────────────────────────────
 struct CryptoMap { const char* sym; const char* id; };
@@ -208,14 +221,6 @@ extern volatile uint32_t      redrawFlags;
 extern volatile PendingAction  pendingAction;
 extern volatile bool           tickerListChanged;
 extern volatile bool           settingsChanged;
-extern volatile Page           currentPage;
-extern volatile bool           lyricsFetchNeeded;
-
-// Lyrics (owned by core 0 fetch, read by core 1 render; protected by dataMutex)
-extern LyricLine               lyrics[MAX_LYRIC_LINES];
-extern int                     numLyrics;
-extern String                  lyricsTrackId;
-extern bool                    lyricsTriedCurrent;  // true once fetch attempted for trackId
 
 // ── Function declarations ───────────────────────────────
 // display.cpp
@@ -232,12 +237,6 @@ void drawInfo();
 void drawCpuIcon(int x, int y, uint16_t color);
 void drawCpuTemp(int x, int y, float tempC, uint16_t color);
 void showStatus(const char* line1, const char* line2 = nullptr);
-void drawLyricsPage();
-void drawLyricsUpdate();
-void drawPage();
-
-// lyrics.cpp
-void fetchLyrics();
 
 // ticker.cpp
 const char* getCoinGeckoId(const char* sym);
